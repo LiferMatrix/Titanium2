@@ -399,7 +399,7 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para moedas com estrela
   if (starCoins.length > 0) {
-    let starAlertText = `🟢*Possível Compra(Radar) *\n\n`;
+    let starAlertText = `🟢*Possível Compra(RSI) *\n\n`;
     starAlertText += await Promise.all(starCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
@@ -469,7 +469,7 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para moedas com caveira
   if (skullCoins.length > 0) {
-    let skullAlertText = `🔴*Possível Correção (Radar) *\n\n`;
+    let skullAlertText = `🔴*Possível Correção (RSI) *\n\n`;
     skullAlertText += await Promise.all(skullCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
