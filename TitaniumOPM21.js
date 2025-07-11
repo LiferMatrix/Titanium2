@@ -1,3 +1,121 @@
+require('dotenv').config();
+const ccxt = require('ccxt');
+const TechnicalIndicators = require('technicalindicators');
+const { Bot } = require('grammy');
+const winston = require('winston');
+const axios = require('axios');
+
+// ================= CONFIGURAÇÃO ================= //
+const config = {
+  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
+  INTERVALO_ALERTA_MS: 15 * 60 * 1000, // 15 minutos
+  RSI_PERIOD: 14,
+  ATR_PERIOD: 14, // Período para cálculo do ATR
+  CACHE_TTL: 5 * 60 * 1000, // 5 minutos
+  MAX_CACHE_SIZE: 100,
+  LIMIT_TRADES_DELTA: 100, // Limite de trades para Volume Delta
+  MIN_VOLUME_USDT: 1000000, // Volume mínimo em USDT para filtro de liquidez
+  MIN_OPEN_INTEREST: 500000, // Open Interest mínimo em USDT
+  VOLUME_SPIKE_THRESHOLD: 2, // 200% de aumento no volume
+  FUNDING_RATE_CHANGE_THRESHOLD: 0.005 // Mudança de 0.5% no funding rate
+};
+
+// Logger
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
+  transports: [
+    new winston.transports.File({ filename: 'monitor.log' }),
+    new winston.transports.Console()
+  ]
+});
+
+// Estado global
+const state = {
+  dataCache: new Map(),
+  lastFundingRates: new Map() // Cache para rastrear funding rates anteriores
+};
+
+// Validação de variáveis de ambiente
+function validateEnv() {
+  const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'];
+  for (const key of required) {
+    if (!process.env[key]) {
+      logger.error(`Missing environment variable: ${key}`);
+      process.exit(1);
+    }
+  }
+}
+validateEnv();
+
+// Inicialização do Telegram e Exchange
+const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+const exchangeFutures = new ccxt.binance({
+  apiKey: process.env.BINANCE_API_KEY,
+  secret: process.env.BINANCE_SECRET_KEY,
+  enableRateLimit: true,
+  timeout: 30000,
+  options: { defaultType: 'future' }
+});
+
+// ================= UTILITÁRIOS ================= //
+async function withRetry(fn, retries = 5, delayBase = 1000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (attempt === retries) {
+        logger.warn(`Falha após ${retries} tentativas: ${e.message}`);
+        throw e;
+      }
+      const delay = Math.pow(2, attempt - 1) * delayBase;
+      logger.info(`Tentativa ${attempt} falhou, retry após ${delay}ms: ${e.message}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+function getCachedData(key) {
+  const cacheEntry = state.dataCache.get(key);
+  if (cacheEntry && Date.now() - cacheEntry.timestamp < config.CACHE_TTL) {
+    logger.info(`Usando cache para ${key}`);
+    return cacheEntry.data;
+  }
+  state.dataCache.delete(key);
+  return null;
+}
+
+function setCachedData(key, data) {
+  if (state.dataCache.size >= config.MAX_CACHE_SIZE) {
+    const oldestKey = state.dataCache.keys().next().value;
+    state.dataCache.delete(oldestKey);
+    logger.info(`Cache cheio, removido item mais antigo: ${oldestKey}`);
+  }
+  state.dataCache.set(key, { timestamp: Date.now(), data });
+}
+
+// Limpeza periódica do cache
+function clearOldCache() {
+  const now = Date.now();
+  for (const [key, entry] of state.dataCache) {
+    if (now - entry.timestamp > config.CACHE_TTL) {
+      state.dataCache.delete(key);
+      logger.info(`Cache removido: ${key}`);
+    }
+  }
+}
+setInterval(clearOldCache, 60 * 60 * 1000); // Limpa a cada hora
+
+async function limitConcurrency(items, fn, limit = 5) {
+  const results = [];
+  for (let i = 0; i < items.length; i += limit) {
+    const batch = items.slice(i, i + limit);
+    const batchResults = await Promise.all(batch.map(item => fn(item)));
+    results.push(...batchResults);
+  }
+  return results;
+}
 
 // ================= INDICADORES ================= //
 function normalizeOHLCV(data) {
@@ -195,7 +313,7 @@ async function detectVolumeSpike(symbol, timeframe = '15m') {
 
 async function detectFundingRateChange(symbol, currentFundingRate) {
   const lastFundingRate = state.lastFundingRates.get(symbol) || currentFundingRate;
-  const change = Math.abs(currentFundingRate - lastFundingRate);
+  const change = Math.absCurrentFundingRate - lastFundingRate;
   const isSignificantChange = change >= config.FUNDING_RATE_CHANGE_THRESHOLD;
   if (isSignificantChange) {
     logger.info(`Mudança significativa no Funding Rate para ${symbol}: ${lastFundingRate}% -> ${currentFundingRate}%`);
@@ -281,13 +399,13 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para moedas com estrela
   if (starCoins.length > 0) {
-    let starAlertText = `🟢*Possível Compra(RSI) *\n\n`;
+    let starAlertText = `🟢*Compra Vol.🤖Operação Flitrada *\n\n`;
     starAlertText += await Promise.all(starCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
       let lsrSymbol = '';
       if (coin.lsr !== null) {
-        if (coin.lsr <= 1.8) lsrSymbol = '✅Baixo';
+        if (coin.lsr <= 1.4) lsrSymbol = '✅Baixo';
         else if (coin.lsr >= 2.8) lsrSymbol = '📛Alto';
       }
       let fundingRateEmoji = '';
@@ -351,13 +469,13 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para moedas com caveira
   if (skullCoins.length > 0) {
-    let skullAlertText = `🔴*Possível Correção (RSI) *\n\n`;
+    let skullAlertText = `🔴*Correção Vol.🤖Operação Flitrada *\n\n`;
     skullAlertText += await Promise.all(skullCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
       let lsrSymbol = '';
       if (coin.lsr !== null) {
-        if (coin.lsr <= 1.8) lsrSymbol = '✅Baixo';
+        if (coin.lsr <= 1.4) lsrSymbol = '✅Baixo';
         else if (coin.lsr >= 2.8) lsrSymbol = '📛Alto';
       }
       let fundingRateEmoji = '';
@@ -397,8 +515,8 @@ async function sendMonitorAlert(coins) {
              `     LSR: ${format(coin.lsr)} ${lsrSymbol}\n` +
              `     RSI (15m): ${format(coin.rsi)}\n` +
              `     RSI (1h): ${format(coin.rsi1h)}\n` +
-             `     Stoch 4H %K: ${estocastico4h ? estocastico4h.k.toFixed(2) : '--'} ${stoch4hEmoji} ${direcao4h}\n` +
-             `     Stoch Diário %K: ${estocasticoD ? estocasticoD.k.toFixed(2) : '--'} ${stochDEmoji} ${direcaoD}\n` +
+             `     Stoch (4h): %K ${stoch4hK}${stoch4hKEmoji} ${stoch4hDir} | %D ${stoch4hD}${stoch4hDEmoji}\n` +
+             `     Stoch (1d): %K ${stoch1dK}${stoch1dKEmoji} ${stoch1dDir} | %D ${stoch1dD}${stoch1dDEmoji}\n` +
              `     Vol.Delta: ${deltaText}\n` +
              `     Fund.Rate: ${fundingRateEmoji}${format(coin.funding.current, 5)}%\n` +
              `     OI 5m: ${oi5mText}\n` +
@@ -419,28 +537,8 @@ async function sendMonitorAlert(coins) {
     logger.info('Alerta de moedas com caveira enviado com sucesso');
   }
 
-  // Alerta de anomalias
-  const anomalyCoins = coins.filter(coin => coin.anomalyDetected);
-  if (anomalyCoins.length > 0) {
-    let anomalyAlertText = `🚨 *Alerta* 🚨\n\n`;
-    anomalyAlertText += anomalyCoins.map((coin, i) => {
-      const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
-      const anomalyText = coin.volumeSpike || coin.fundingAnomaly ? `🚨Volume: ${coin.volumeSpike ? 'Pico de Volume' : ''}${coin.volumeSpike && coin.fundingAnomaly ? ' | ' : ''}${coin.fundingAnomaly ? 'Mudança no Funding Rate' : ''}` : '';
-      return `${i + 1}. *${coin.symbol}* [- TradingView](${tradingViewLink})\n` +
-             `   ${anomalyText}\n` +
-             `   💲 Preço: ${formatPrice(coin.price)}\n`;
-    }).join('\n');
-    anomalyAlertText += `\n☑︎ 🤖 Titanium By @J4Rviz`;
-
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, anomalyAlertText, {
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true
-    }));
-    logger.info('Alerta de anomalias enviado com sucesso');
-  }
-
-  if (starCoins.length === 0 && skullCoins.length === 0 && anomalyCoins.length === 0) {
-    logger.info('Nenhuma moeda válida para alertas (estrela, caveira ou anomalia), nenhum alerta enviado.');
+  if (starCoins.length === 0 && skullCoins.length === 0) {
+    logger.info('Nenhuma moeda válida para alertas (estrela ou caveira), nenhum alerta enviado.');
   } else {
     logger.info('Alertas de monitoramento processados com sucesso');
   }
