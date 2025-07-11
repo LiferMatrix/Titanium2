@@ -392,14 +392,14 @@ async function sendMonitorAlert(coins) {
     !coin.oi15m.isRising && 
     coin.funding.current > 0 &&
     coin.lsr >= 2.8 &&
-    coin.rsi1h !== null && coin.rsi1h > 60 &&
+    coin.rsi1h !== null && coin.rsi1h > 65 &&
     coin.volume >= config.MIN_VOLUME_USDT &&
     coin.oi15m.value >= config.MIN_OPEN_INTEREST
   );
 
   // Alerta para moedas com estrela
   if (starCoins.length > 0) {
-    let starAlertText = `🟢*Compra Vol.🤖Operação Flitrada *\n\n`;
+    let starAlertText = `🟢*Compra Vol.🤖Operação Filtrada *\n\n`;
     starAlertText += await Promise.all(starCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
@@ -458,7 +458,7 @@ async function sendMonitorAlert(coins) {
              `   ⛔Stop: ${stopLoss}\n` +
              anomalyText;
     })).then(results => results.join('\n'));
-    starAlertText += `\n☑︎ 🤖 Monitor Titanium Optmus Prime`;
+    starAlertText += `\n☑︎ 🤖 Gerencie seu risco @J4Rviz`;
 
     await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, starAlertText, {
       parse_mode: 'Markdown',
@@ -469,7 +469,7 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para moedas com caveira
   if (skullCoins.length > 0) {
-    let skullAlertText = `🔴*Correção Vol.🤖Operação Flitrada *\n\n`;
+    let skullAlertText = `🔴*Correção Vol.🤖Operação Filtrada *\n\n`;
     skullAlertText += await Promise.all(skullCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
@@ -647,7 +647,7 @@ async function checkCoins() {
 async function main() {
   logger.info('Iniciando monitor de moedas');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium ...!'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium Robot ...!'));
     await checkCoins();
     setInterval(checkCoins, config.INTERVALO_ALERTA_MS);
   } catch (e) {
