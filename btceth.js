@@ -800,9 +800,9 @@ async function sendStatusReport() {
 
 // Função principal
 async function main() {
-  logger.info('Iniciando análise automática de BTCUSDT');
+  logger.info('Iniciando análise I.A. BTCUSDT');
   try {
-    await bot.api.sendMessage(TELEGRAM_CHAT_ID, '🤖 Titanium Radar - Análise Automática BTCUSDT');
+    await bot.api.sendMessage(TELEGRAM_CHAT_ID, '🤖 Titanium BTCUSDT');
     await sendStatusReport(); // Envia relatório inicial
     setInterval(sendStatusReport, INTERVALO_RELATORIO_15M_MS); // A cada 15 minutos
   } catch (e) {
