@@ -20,7 +20,8 @@ const config = {
   VOLUME_SPIKE_THRESHOLD: 2,
   FUNDING_RATE_CHANGE_THRESHOLD: 0.005,
   RSI_OVERSOLD_THRESHOLD: 25, // Limite de sobrevenda
-  RSI_OVERBOUGHT_THRESHOLD: 75 // Limite de sobrecompra
+  RSI_OVERBOUGHT_THRESHOLD: 75, // Limite de sobrecompra
+  DELTA_THRESHOLD: 5 // Limiar mínimo para o delta percentual (exemplo: 5%)
 };
 
 // Logger
@@ -138,13 +139,13 @@ function updateRsiPeaks(symbol, rsi15m) {
 }
 
 async function limitConcurrency(items, fn, limit = 5) {
-  const Ergebnisse = [];
+  const results = [];
   for (let i = 0; i < items.length; i += limit) {
     const batch = items.slice(i, i + limit);
     const batchResults = await Promise.all(batch.map(item => fn(item)));
-    Ergebnisse.push(...batchResults);
+    results.push(...batchResults);
   }
-  return Ergebnisse;
+  return results;
 }
 
 // ================= INDICADORES ================= //
@@ -381,7 +382,9 @@ async function sendMonitorAlert(coins) {
       rsiPeaks.oversold15m && // RSI 15m atingiu sobrevenda
       coin.oi15m.isRising &&   // OI 15m subindo
       coin.volume >= config.MIN_VOLUME_USDT &&
-      coin.oi15m.value >= config.MIN_OPEN_INTEREST
+      coin.oi15m.value >= config.MIN_OPEN_INTEREST &&
+      coin.delta.isBuyPressure && // Volume delta agressivo positivo
+      coin.delta.deltaPercent >= config.DELTA_THRESHOLD // Delta percentual significativo
     );
   });
 
@@ -392,7 +395,9 @@ async function sendMonitorAlert(coins) {
       rsiPeaks.overbought15m && // RSI 15m atingiu sobrecompra
       !coin.oi15m.isRising &&    // OI 15m caindo
       coin.volume >= config.MIN_VOLUME_USDT &&
-      coin.oi15m.value >= config.MIN_OPEN_INTEREST
+      coin.oi15m.value >= config.MIN_OPEN_INTEREST &&
+      !coin.delta.isBuyPressure && // Volume delta agressivo negativo
+      Math.abs(coin.delta.deltaPercent) >= config.DELTA_THRESHOLD // Delta percentual significativo
     );
   });
 
@@ -447,7 +452,7 @@ async function sendMonitorAlert(coins) {
              `     OI 15m: ${oi15mText}\n` +
              anomalyText;
     })).then(results => results.join('\n'));
-    starAlertText += `\n☑︎ 🤖 Tecnologia I.A. @J4Rviz`;
+    starAlertText += `\n☑︎ 🤖 Gerencie seu risco - @J4Rviz`;
 
     await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, starAlertText, {
       parse_mode: 'Markdown',
@@ -504,7 +509,7 @@ async function sendMonitorAlert(coins) {
              `     OI 15m: ${oi15mText}\n` +
              anomalyText;
     })).then(results => results.join('\n'));
-    skullAlertText += `\n☑︎ 🤖 Tecnologia @J4Rviz`;
+    skullAlertText += `\n☑︎ 🤖 Gerencie seu risco - @J4Rviz`;
 
     await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, skullAlertText, {
       parse_mode: 'Markdown',
