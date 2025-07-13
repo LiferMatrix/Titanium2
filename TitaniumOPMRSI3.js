@@ -11,14 +11,16 @@ const config = {
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   INTERVALO_ALERTA_MS: 15 * 60 * 1000, // 15 minutos
   RSI_PERIOD: 14,
-  ATR_PERIOD: 14, // Período para cálculo do ATR
+  ATR_PERIOD: 14,
   CACHE_TTL: 5 * 60 * 1000, // 5 minutos
   MAX_CACHE_SIZE: 100,
-  LIMIT_TRADES_DELTA: 100, // Limite de trades para Volume Delta
-  MIN_VOLUME_USDT: 1000000, // Volume mínimo em USDT para filtro de liquidez
-  MIN_OPEN_INTEREST: 500000, // Open Interest mínimo em USDT
-  VOLUME_SPIKE_THRESHOLD: 2, // 200% de aumento no volume
-  FUNDING_RATE_CHANGE_THRESHOLD: 0.005 // Mudança de 0.5% no funding rate
+  LIMIT_TRADES_DELTA: 100,
+  MIN_VOLUME_USDT: 1000000,
+  MIN_OPEN_INTEREST: 500000,
+  VOLUME_SPIKE_THRESHOLD: 2,
+  FUNDING_RATE_CHANGE_THRESHOLD: 0.005,
+  RSI_OVERSOLD_THRESHOLD: 30, // Limite de sobrevenda
+  RSI_OVERBOUGHT_THRESHOLD: 70 // Limite de sobrecompra
 };
 
 // Logger
@@ -34,7 +36,8 @@ const logger = winston.createLogger({
 // Estado global
 const state = {
   dataCache: new Map(),
-  lastFundingRates: new Map() // Cache para rastrear funding rates anteriores
+  lastFundingRates: new Map(),
+  rsiPeaks: new Map() // Cache para picos de RSI (sobrevenda/sobrecompra)
 };
 
 // Validação de variáveis de ambiente
@@ -105,7 +108,46 @@ function clearOldCache() {
     }
   }
 }
-setInterval(clearOldCache, 60 * 60 * 1000); // Limpa a cada hora
+setInterval(clearOldCache, 60 * 60 * 1000);
+
+// Rastrear picos de RSI
+function updateRsiPeaks(symbol, rsi15m, rsi1h) {
+  const cacheKey = `rsi_peaks_${symbol}`;
+  const currentPeaks = state.rsiPeaks.get(cacheKey) || {
+    oversold15m: false,
+    oversold1h: false,
+    overbought15m: false,
+    overbought1h: false,
+    timestamp: Date.now()
+  };
+
+  // Atualizar picos de sobrevenda e sobrecompra
+  if (rsi15m !== null && rsi15m < config.RSI_OVERSOLD_THRESHOLD) {
+    currentPeaks.oversold15m = true;
+  }
+  if (rsi1h !== null && rsi1h < config.RSI_OVERSOLD_THRESHOLD) {
+    currentPeaks.oversold1h = true;
+  }
+  if (rsi15m !== null && rsi15m > config.RSI_OVERBOUGHT_THRESHOLD) {
+    currentPeaks.overbought15m = true;
+  }
+  if (rsi1h !== null && rsi1h > config.RSI_OVERBOUGHT_THRESHOLD) {
+    currentPeaks.overbought1h = true;
+  }
+
+  // Resetar picos se RSI voltar a valores normais
+  if (rsi15m !== null && rsi15m >= config.RSI_OVERSOLD_THRESHOLD && rsi15m <= config.RSI_OVERBOUGHT_THRESHOLD) {
+    currentPeaks.oversold15m = false;
+    currentPeaks.overbought15m = false;
+  }
+  if (rsi1h !== null && rsi1h >= config.RSI_OVERSOLD_THRESHOLD && rsi1h <= config.RSI_OVERBOUGHT_THRESHOLD) {
+    currentPeaks.oversold1h = false;
+    currentPeaks.overbought1h = false;
+  }
+
+  state.rsiPeaks.set(cacheKey, { ...currentPeaks, timestamp: Date.now() });
+  logger.info(`RSI Peaks atualizados para ${symbol}: ${JSON.stringify(currentPeaks)}`);
+}
 
 async function limitConcurrency(items, fn, limit = 5) {
   const results = [];
@@ -157,7 +199,7 @@ function calculateATR(data) {
 }
 
 function calculateStochastic(data) {
-  if (!data || data.length < 5 + 3) { // 5 para %K, +3 para suavização
+  if (!data || data.length < 5 + 3) {
     logger.warn(`Dados insuficientes para calcular Estocástico: ${data?.length || 0} velas disponíveis`);
     return { k: null, d: null, previousK: null };
   }
@@ -218,7 +260,7 @@ async function fetchFundingRate(symbol) {
     const fundingData = await withRetry(() => exchangeFutures.fetchFundingRate(symbol));
     const result = { current: parseFloat((fundingData.fundingRate * 100).toFixed(5)) };
     setCachedData(cacheKey, result);
-    state.lastFundingRates.set(symbol, result.current); // Armazena para monitoramento de anomalias
+    state.lastFundingRates.set(symbol, result.current);
     return result;
   } catch (e) {
     logger.warn(`Erro ao buscar Funding Rate para ${symbol}: ${e.message}`);
@@ -332,72 +374,48 @@ function getSetaDirecao(current, previous) {
   return current > previous ? "⬆️" : current < previous ? "⬇️" : "➡️";
 }
 
-// ================= GERENCIAMENTO DE RISCO ================= //
-function calculateRiskReward(coin, isBuy) {
-  if (coin.atr === null || coin.atr === 'N/A') return 'N/A';
-  const entry = coin.price;
-  const atrMultiplierStop = 2; // Stop-loss em 2x ATR
-  const atrMultiplierTarget = 3; // Take-profit em 3x ATR (Alvo 2)
-  const stop = isBuy ? entry - atrMultiplierStop * coin.atr : entry + atrMultiplierStop * coin.atr;
-  const target = isBuy ? entry + atrMultiplierTarget * coin.atr : entry - atrMultiplierTarget * coin.atr;
-  const risk = Math.abs(entry - stop);
-  const reward = Math.abs(target - entry);
-  return reward / risk > 0 ? (reward / risk).toFixed(2) : 'N/A';
-}
-
 // ================= ALERTAS ================= //
 async function sendMonitorAlert(coins) {
-  const topLow = coins
-    .filter(c => c.lsr !== null && c.rsi !== null)
-    .sort((a, b) => a.rsi - b.rsi) // Ordenar por RSI 15m mais baixo
+  // Ordenar moedas por RSI (15m + 1h) para compra (menor) e venda (maior)
+  const topLowRsi = coins
+    .filter(c => c.rsi !== null && c.rsi1h !== null)
+    .sort((a, b) => (a.rsi + a.rsi1h) - (b.rsi + b.rsi1h))
     .slice(0, 20);
-  const topHigh = coins
-    .filter(c => c.lsr !== null && c.rsi !== null)
-    .sort((a, b) => b.rsi - a.rsi) // Ordenar por RSI 15m mais alto
+  const topHighRsi = coins
+    .filter(c => c.rsi !== null && c.rsi1h !== null)
+    .sort((a, b) => (b.rsi + b.rsi1h) - (a.rsi + a.rsi1h))
     .slice(0, 20);
 
-  // Identificar moedas com Volume Delta mais positivo/negativo
-  const topPositiveDelta = topLow
-    .filter(c => c.delta.isBuyPressure)
-    .sort((a, b) => b.delta.deltaPercent - a.delta.deltaPercent)
-    .slice(0, 10)
-    .map(c => c.symbol);
-  const topNegativeDelta = topHigh
-    .filter(c => !c.delta.isBuyPressure)
-    .sort((a, b) => a.delta.deltaPercent - b.delta.deltaPercent)
-    .slice(0, 10)
-    .map(c => c.symbol);
+  // Filtrar moedas com estrela (compra)
+  const starCoins = topLowRsi.filter(coin => {
+    const rsiPeaks = state.rsiPeaks.get(`rsi_peaks_${coin.symbol}`) || {};
+    return (
+      rsiPeaks.oversold15m && // RSI 15m atingiu sobrevenda
+      rsiPeaks.oversold1h &&   // RSI 1h atingiu sobrevenda
+      coin.oi15m.isRising &&   // OI 15m subindo
+      coin.volume >= config.MIN_VOLUME_USDT &&
+      coin.oi15m.value >= config.MIN_OPEN_INTEREST
+    );
+  });
+
+  // Filtrar moedas com caveira (venda/correção)
+  const skullCoins = topHighRsi.filter(coin => {
+    const rsiPeaks = state.rsiPeaks.get(`rsi_peaks_${coin.symbol}`) || {};
+    return (
+      rsiPeaks.overbought15m && // RSI 15m atingiu sobrecompra
+      rsiPeaks.overbought1h &&   // RSI 1h atingiu sobrecompra
+      !coin.oi15m.isRising &&    // OI 15m caindo
+      coin.volume >= config.MIN_VOLUME_USDT &&
+      coin.oi15m.value >= config.MIN_OPEN_INTEREST
+    );
+  });
 
   const format = (v, precision = 2) => isNaN(v) || v === null ? 'N/A' : v.toFixed(precision);
   const formatPrice = (price) => price < 1 ? price.toFixed(8) : price < 10 ? price.toFixed(6) : price < 100 ? price.toFixed(4) : price.toFixed(2);
 
-  // Filtrar moedas com estrela (⭐) - Compra
-  const starCoins = topLow.filter(coin => 
-    topPositiveDelta.includes(coin.symbol) && 
-    coin.delta.isBuyPressure && 
-    coin.oi15m.isRising && 
-    coin.lsr <= 1.4 &&
-    coin.rsi1h !== null && coin.rsi1h < 60 &&
-    coin.volume >= config.MIN_VOLUME_USDT &&
-    coin.oi15m.value >= config.MIN_OPEN_INTEREST &&
-    coin.stoch4h.k !== null && coin.stoch4h.k < 70 // Estocástico %K 4h baixo para compra
-  );
-
-  // Filtrar moedas com caveira (💀) - Venda
-  const skullCoins = topHigh.filter(coin => 
-    topNegativeDelta.includes(coin.symbol) && 
-    !coin.delta.isBuyPressure && 
-    !coin.oi15m.isRising && 
-    coin.lsr >= 2.5 &&
-    coin.rsi1h !== null && coin.rsi1h > 65 &&
-    coin.volume >= config.MIN_VOLUME_USDT &&
-    coin.oi15m.value >= config.MIN_OPEN_INTEREST &&
-    coin.stoch4h.k !== null && coin.stoch4h.k > 85 // Estocástico %K 4h alto para venda
-  );
-
   // Alerta para moedas com estrela
   if (starCoins.length > 0) {
-    let starAlertText = `🟢*Compra Vol.🤖RSI 15m *\n\n`;
+    let starAlertText = `🟢*RSI-💥Monitor💥 *\n\n`;
     starAlertText += await Promise.all(starCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
@@ -418,13 +436,6 @@ async function sendMonitorAlert(coins) {
       }
       const oi5mText = coin.oi5m.isRising ? '⬆️ Subindo' : '⬇️ Descendo';
       const oi15mText = coin.oi15m.isRising ? '⬆️ Subindo' : '⬇️ Descendo';
-      const atr = coin.atr !== null ? coin.atr : 'N/A';
-      const target1 = atr !== 'N/A' ? formatPrice(coin.price + 1.5 * atr) : 'N/A';
-      const target2 = atr !== 'N/A' ? formatPrice(coin.price + 3 * atr) : 'N/A';
-      const target3 = atr !== 'N/A' ? formatPrice(coin.price + 5 * atr) : 'N/A';
-      const target4 = atr !== 'N/A' ? formatPrice(coin.price + 7 * atr) : 'N/A';
-      const stopLoss = atr !== 'N/A' ? formatPrice(coin.price - 2 * atr) : 'N/A';
-      const riskReward = calculateRiskReward(coin, true);
       const isVolumeSpike = await detectVolumeSpike(coin.symbol);
       const isFundingAnomaly = await detectFundingRateChange(coin.symbol, coin.funding.current);
       const anomalyText = isVolumeSpike || isFundingAnomaly ? `🚨 Anomalia: ${isVolumeSpike ? 'Pico de Volume' : ''}${isVolumeSpike && isFundingAnomaly ? ' | ' : ''}${isFundingAnomaly ? 'Mudança no Funding Rate' : ''}\n` : '';
@@ -449,14 +460,9 @@ async function sendMonitorAlert(coins) {
              `     Fund.Rate: ${fundingRateEmoji}${format(coin.funding.current, 5)}%\n` +
              `     OI 5m: ${oi5mText}\n` +
              `     OI 15m: ${oi15mText}\n` +
-             `     Alvo 1: ${target1}\n` +
-             `     Alvo 2: ${target2} (R:R = ${riskReward})\n` +
-             `     Alvo 3: ${target3}\n` +
-             `     Alvo 4: ${target4}\n` +
-             `   ⛔Stop: ${stopLoss}\n` +
              anomalyText;
     })).then(results => results.join('\n'));
-    starAlertText += `\n☑︎ 🤖 Gerencie seu risco @J4Rviz`;
+    starAlertText += `\n☑︎ 🤖 Tecnologia @J4Rviz`;
 
     await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, starAlertText, {
       parse_mode: 'Markdown',
@@ -467,7 +473,7 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para moedas com caveira
   if (skullCoins.length > 0) {
-    let skullAlertText = `🔴*Correção Vol.🤖RSI 15M *\n\n`;
+    let skullAlertText = `🔴*RSI-💥Monitor💥 *\n\n`;
     skullAlertText += await Promise.all(skullCoins.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
@@ -488,13 +494,6 @@ async function sendMonitorAlert(coins) {
       }
       const oi5mText = coin.oi5m.isRising ? '⬆️ Subindo' : '⬇️ Descendo';
       const oi15mText = coin.oi15m.isRising ? '⬆️ Subindo' : '⬇️ Descendo';
-      const atr = coin.atr !== null ? coin.atr : 'N/A';
-      const target1 = atr !== 'N/A' ? formatPrice(coin.price - 1.5 * atr) : 'N/A';
-      const target2 = atr !== 'N/A' ? formatPrice(coin.price - 3 * atr) : 'N/A';
-      const target3 = atr !== 'N/A' ? formatPrice(coin.price - 5 * atr) : 'N/A';
-      const target4 = atr !== 'N/A' ? formatPrice(coin.price - 7 * atr) : 'N/A';
-      const stopLoss = atr !== 'N/A' ? formatPrice(coin.price + 2 * atr) : 'N/A';
-      const riskReward = calculateRiskReward(coin, false);
       const isVolumeSpike = await detectVolumeSpike(coin.symbol);
       const isFundingAnomaly = await detectFundingRateChange(coin.symbol, coin.funding.current);
       const anomalyText = isVolumeSpike || isFundingAnomaly ? `🚨 Anomalia: ${isVolumeSpike ? 'Pico de Volume' : ''}${isVolumeSpike && isFundingAnomaly ? ' | ' : ''}${isFundingAnomaly ? 'Mudança no Funding Rate' : ''}\n` : '';
@@ -519,14 +518,9 @@ async function sendMonitorAlert(coins) {
              `     Fund.Rate: ${fundingRateEmoji}${format(coin.funding.current, 5)}%\n` +
              `     OI 5m: ${oi5mText}\n` +
              `     OI 15m: ${oi15mText}\n` +
-             `     Alvo 1: ${target1}\n` +
-             `     Alvo 2: ${target2} (R:R = ${riskReward})\n` +
-             `     Alvo 3: ${target3}\n` +
-             `     Alvo 4: ${target4}\n` +
-             `   ⛔Stop: ${stopLoss}\n` +
              anomalyText;
     })).then(results => results.join('\n'));
-    skullAlertText += `\n☑︎ 🤖 Gerencie seu risco @J4Rviz`;
+    skullAlertText += `\n☑︎ 🤖 Tecnologia @J4Rviz`;
 
     await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, skullAlertText, {
       parse_mode: 'Markdown',
@@ -548,20 +542,18 @@ async function checkCoins() {
     const markets = await withRetry(() => exchangeFutures.loadMarkets());
     const usdtPairs = Object.keys(markets)
       .filter(symbol => symbol.endsWith('/USDT') && markets[symbol].active)
-      .slice(0, 100); // Limita a 100 pares para evitar sobrecarga
+      .slice(0, 100);
 
     const coinsData = await limitConcurrency(usdtPairs, async (symbol) => {
       try {
-        // Obter preço atual e volume
         const ticker = await withRetry(() => exchangeFutures.fetchTicker(symbol));
         const price = ticker?.last || null;
-        const volume = ticker?.baseVolume * price || 0; // Volume em USDT
+        const volume = ticker?.baseVolume * price || 0;
         if (!price) {
           logger.warn(`Preço inválido para ${symbol}, pulando...`);
           return null;
         }
 
-        // Obter OHLCV para RSI (15m) e ATR
         const ohlcv15mRaw = getCachedData(`ohlcv_${symbol}_15m`) ||
           await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '15m', undefined, Math.max(config.RSI_PERIOD, config.ATR_PERIOD) + 1));
         setCachedData(`ohlcv_${symbol}_15m`, ohlcv15mRaw);
@@ -571,7 +563,6 @@ async function checkCoins() {
           return null;
         }
 
-        // Obter OHLCV para RSI (1h)
         const ohlcv1hRaw = getCachedData(`ohlcv_${symbol}_1h`) ||
           await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '1h', undefined, config.RSI_PERIOD + 1));
         setCachedData(`ohlcv_${symbol}_1h`, ohlcv1hRaw);
@@ -581,9 +572,8 @@ async function checkCoins() {
           return null;
         }
 
-        // Obter OHLCV para Estocástico (4h)
         const ohlcv4hRaw = getCachedData(`ohlcv_${symbol}_4h`) ||
-          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '4h', undefined, 8)); // 5 + 3 para Stoch 5.3.3
+          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '4h', undefined, 8));
         setCachedData(`ohlcv_${symbol}_4h`, ohlcv4hRaw);
         const ohlcv4h = normalizeOHLCV(ohlcv4hRaw);
         if (!ohlcv4h.length) {
@@ -591,9 +581,8 @@ async function checkCoins() {
           return null;
         }
 
-        // Obter OHLCV para Estocástico (1d)
         const ohlcv1dRaw = getCachedData(`ohlcv_${symbol}_1d`) ||
-          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '1d', undefined, 8)); // 5 + 3 para Stoch 5.3.3
+          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '1d', undefined, 8));
         setCachedData(`ohlcv_${symbol}_1d`, ohlcv1dRaw);
         const ohlcv1d = normalizeOHLCV(ohlcv1dRaw);
         if (!ohlcv1d.length) {
@@ -601,7 +590,6 @@ async function checkCoins() {
           return null;
         }
 
-        // Calcular indicadores
         const rsi = calculateRSI(ohlcv15m);
         const rsi1h = calculateRSI(ohlcv1h);
         const atr = calculateATR(ohlcv15m);
@@ -613,12 +601,13 @@ async function checkCoins() {
         const stoch4h = calculateStochastic(ohlcv4h);
         const stoch1d = calculateStochastic(ohlcv1d);
 
-        // Detectar anomalias
+        // Atualizar picos de RSI
+        updateRsiPeaks(symbol, rsi, rsi1h);
+
         const volumeSpike = await detectVolumeSpike(symbol);
         const fundingAnomaly = await detectFundingRateChange(symbol, funding.current);
         const anomalyDetected = volumeSpike || fundingAnomaly;
 
-        // Filtro de liquidez
         if (volume < config.MIN_VOLUME_USDT || oi15m.value < config.MIN_OPEN_INTEREST) {
           logger.info(`Par ${symbol} filtrado por baixa liquidez: Volume=${volume}, OI=${oi15m.value}`);
           return null;
@@ -645,7 +634,7 @@ async function checkCoins() {
 async function main() {
   logger.info('Iniciando monitor de moedas');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium Robot RsiStoch...!'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium RSI...!'));
     await checkCoins();
     setInterval(checkCoins, config.INTERVALO_ALERTA_MS);
   } catch (e) {
