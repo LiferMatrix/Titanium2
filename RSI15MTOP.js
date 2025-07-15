@@ -9,19 +9,16 @@ const axios = require('axios');
 const config = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
-  INTERVALO_ALERTA_MS: 15 * 60 * 1000, // 15 minutos
+  INTERVALO_ALERTA_MS: 5 * 60 * 1000, // 5 minutos
   RSI_PERIOD: 14,
   ATR_PERIOD: 14,
   CACHE_TTL: 5 * 60 * 1000, // 5 minutos
   MAX_CACHE_SIZE: 100,
   LIMIT_TRADES_DELTA: 100,
-  MIN_VOLUME_USDT: 1000000,
-  MIN_OPEN_INTEREST: 500000,
   VOLUME_SPIKE_THRESHOLD: 2,
   FUNDING_RATE_CHANGE_THRESHOLD: 0.005,
   RSI_OVERSOLD_THRESHOLD: 25, // Limite de sobrevenda
-  RSI_OVERBOUGHT_THRESHOLD: 75, // Limite de sobrecompra
-  DELTA_THRESHOLD: 5 // Limiar mínimo para o delta percentual (exemplo: 5%)
+  RSI_OVERBOUGHT_THRESHOLD: 75 // Limite de sobrecompra
 };
 
 // Logger
@@ -38,7 +35,7 @@ const logger = winston.createLogger({
 const state = {
   dataCache: new Map(),
   lastFundingRates: new Map(),
-  rsiPeaks: new Map() // Cache para picos de RSI (sobrevenda/sobrecompra)
+  rsiPeaks: new Map() // Cache para picos de RSI
 };
 
 // Validação de variáveis de ambiente
@@ -100,7 +97,7 @@ function setCachedData(key, data) {
 }
 
 // Limpeza periódica do cache
-function clearOldCache() {
+setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of state.dataCache) {
     if (now - entry.timestamp > config.CACHE_TTL) {
@@ -108,8 +105,7 @@ function clearOldCache() {
       logger.info(`Cache removido: ${key}`);
     }
   }
-}
-setInterval(clearOldCache, 60 * 60 * 1000);
+}, 60 * 60 * 1000);
 
 // Rastrear picos de RSI
 function updateRsiPeaks(symbol, rsi15m) {
@@ -120,15 +116,12 @@ function updateRsiPeaks(symbol, rsi15m) {
     timestamp: Date.now()
   };
 
-  // Atualizar picos de sobrevenda e sobrecompra
   if (rsi15m !== null && rsi15m < config.RSI_OVERSOLD_THRESHOLD) {
     currentPeaks.oversold15m = true;
   }
   if (rsi15m !== null && rsi15m > config.RSI_OVERBOUGHT_THRESHOLD) {
     currentPeaks.overbought15m = true;
   }
-
-  // Resetar picos se RSI voltar a valores normais
   if (rsi15m !== null && rsi15m >= config.RSI_OVERSOLD_THRESHOLD && rsi15m <= config.RSI_OVERBOUGHT_THRESHOLD) {
     currentPeaks.oversold15m = false;
     currentPeaks.overbought15m = false;
@@ -168,7 +161,7 @@ function calculateRSI(data) {
   }
   const rsi = TechnicalIndicators.RSI.calculate({
     period: config.RSI_PERIOD,
-    values: data.map(d => d.close || d[4])
+    values: data.map(d => d.close)
   });
   return rsi.length ? parseFloat(rsi[rsi.length - 1].toFixed(2)) : null;
 }
@@ -180,9 +173,9 @@ function calculateATR(data) {
   }
   const atr = TechnicalIndicators.ATR.calculate({
     period: config.ATR_PERIOD,
-    high: data.map(d => d.high || d[2]),
-    low: data.map(d => d.low || d[3]),
-    close: data.map(d => d.close || d[4])
+    high: data.map(d => d.high),
+    low: data.map(d => d.low),
+    close: data.map(d => d.close)
   });
   return atr.length ? parseFloat(atr[atr.length - 1].toFixed(8)) : null;
 }
@@ -195,9 +188,9 @@ function calculateStochastic(data) {
   const stochastic = TechnicalIndicators.Stochastic.calculate({
     period: 5,
     signalPeriod: 3,
-    high: data.map(d => d.high || d[2]),
-    low: data.map(d => d.low || d[3]),
-    close: data.map(d => d.close || d[4])
+    high: data.map(d => d.high),
+    low: data.map(d => d.low),
+    close: data.map(d => d.close)
   });
   if (stochastic.length < 2) {
     logger.warn(`Resultados insuficientes para Estocástico: ${stochastic.length} períodos calculados`);
@@ -207,6 +200,21 @@ function calculateStochastic(data) {
     k: parseFloat(stochastic[stochastic.length - 1].k.toFixed(2)),
     d: parseFloat(stochastic[stochastic.length - 1].d.toFixed(2)),
     previousK: parseFloat(stochastic[stochastic.length - 2].k.toFixed(2))
+  };
+}
+
+function calculateSupportResistance(data) {
+  if (!data || data.length < 50) {
+    logger.warn(`Dados insuficientes para calcular Suporte/Resistência: ${data?.length || 0} velas disponíveis`);
+    return { support: null, resistance: null };
+  }
+  const lows = data.map(d => d.low);
+  const highs = data.map(d => d.high);
+  const support = Math.min(...lows);
+  const resistance = Math.max(...highs);
+  return {
+    support: parseFloat(support.toFixed(8)),
+    resistance: parseFloat(resistance.toFixed(8))
   };
 }
 
@@ -365,49 +373,21 @@ function getSetaDirecao(current, previous) {
 
 // ================= ALERTAS ================= //
 async function sendMonitorAlert(coins) {
-  // Ordenar moedas por RSI (15m) para compra (menor) e venda (maior)
   const topLowRsi = coins
-    .filter(c => c.rsi !== null)
+    .filter(c => c.rsi !== null && c.rsi < config.RSI_OVERSOLD_THRESHOLD)
     .sort((a, b) => a.rsi - b.rsi)
     .slice(0, 20);
   const topHighRsi = coins
-    .filter(c => c.rsi !== null)
+    .filter(c => c.rsi !== null && c.rsi > config.RSI_OVERBOUGHT_THRESHOLD)
     .sort((a, b) => b.rsi - a.rsi)
     .slice(0, 20);
-
-  // Filtrar moedas com estrela (compra)
-  const starCoins = topLowRsi.filter(coin => {
-    const rsiPeaks = state.rsiPeaks.get(`rsi_peaks_${coin.symbol}`) || {};
-    return (
-      rsiPeaks.oversold15m && // RSI 15m atingiu sobrevenda
-      coin.oi15m.isRising &&   // OI 15m subindo
-      coin.volume >= config.MIN_VOLUME_USDT &&
-      coin.oi15m.value >= config.MIN_OPEN_INTEREST &&
-      coin.delta.isBuyPressure && // Volume delta agressivo positivo
-      coin.delta.deltaPercent >= config.DELTA_THRESHOLD // Delta percentual significativo
-    );
-  });
-
-  // Filtrar moedas com caveira (venda/correção)
-  const skullCoins = topHighRsi.filter(coin => {
-    const rsiPeaks = state.rsiPeaks.get(`rsi_peaks_${coin.symbol}`) || {};
-    return (
-      rsiPeaks.overbought15m && // RSI 15m atingiu sobrecompra
-      !coin.oi15m.isRising &&    // OI 15m caindo
-      coin.volume >= config.MIN_VOLUME_USDT &&
-      coin.oi15m.value >= config.MIN_OPEN_INTEREST &&
-      !coin.delta.isBuyPressure && // Volume delta agressivo negativo
-      Math.abs(coin.delta.deltaPercent) >= config.DELTA_THRESHOLD // Delta percentual significativo
-    );
-  });
 
   const format = (v, precision = 2) => isNaN(v) || v === null ? 'N/A' : v.toFixed(precision);
   const formatPrice = (price) => price < 1 ? price.toFixed(8) : price < 10 ? price.toFixed(6) : price < 100 ? price.toFixed(4) : price.toFixed(2);
 
-  // Alerta para moedas com estrela
-  if (starCoins.length > 0) {
+  if (topLowRsi.length > 0) {
     let starAlertText = `🟢*RSI-💥Monitor💥 *\n\n`;
-    starAlertText += await Promise.all(starCoins.map(async (coin, i) => {
+    starAlertText += await Promise.all(topLowRsi.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
       let lsrSymbol = '';
@@ -444,12 +424,15 @@ async function sendMonitorAlert(coins) {
              `   💲 Preço: ${formatPrice(coin.price)}\n` +
              `     LSR: ${format(coin.lsr)} ${lsrSymbol}\n` +
              `     RSI (15m): ${format(coin.rsi)}\n` +
+             `     RSI (1h): ${format(coin.rsi1h)}\n` +
              `     Stoch (4h): %K ${stoch4hK}${stoch4hKEmoji} ${stoch4hDir} | %D ${stoch4hD}${stoch4hDEmoji}\n` +
              `     Stoch (1d): %K ${stoch1dK}${stoch1dKEmoji} ${stoch1dDir} | %D ${stoch1dD}${stoch1dDEmoji}\n` +
              `     Vol.Delta: ${deltaText}\n` +
              `     Fund.Rate: ${fundingRateEmoji}${format(coin.funding.current, 5)}%\n` +
              `     OI 5m: ${oi5mText}\n` +
              `     OI 15m: ${oi15mText}\n` +
+             `     Suporte: ${formatPrice(coin.supportResistance.support)}\n` +
+             `     Resistência: ${formatPrice(coin.supportResistance.resistance)}\n` +
              anomalyText;
     })).then(results => results.join('\n'));
     starAlertText += `\n☑︎ 🤖 Gerencie seu risco - @J4Rviz`;
@@ -458,13 +441,12 @@ async function sendMonitorAlert(coins) {
       parse_mode: 'Markdown',
       disable_web_page_preview: true
     }));
-    logger.info('Alerta de moedas com estrela enviado com sucesso');
+    logger.info('Alerta de moedas com RSI em sobrevenda enviado com sucesso');
   }
 
-  // Alerta para moedas com caveira
-  if (skullCoins.length > 0) {
+  if (topHighRsi.length > 0) {
     let skullAlertText = `🔴*RSI-💥Monitor💥 *\n\n`;
-    skullAlertText += await Promise.all(skullCoins.map(async (coin, i) => {
+    skullAlertText += await Promise.all(topHighRsi.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
       let lsrSymbol = '';
@@ -501,12 +483,15 @@ async function sendMonitorAlert(coins) {
              `   💲 Preço: ${formatPrice(coin.price)}\n` +
              `     LSR: ${format(coin.lsr)} ${lsrSymbol}\n` +
              `     RSI (15m): ${format(coin.rsi)}\n` +
+             `     RSI (1h): ${format(coin.rsi1h)}\n` +
              `     Stoch (4h): %K ${stoch4hK}${stoch4hKEmoji} ${stoch4hDir} | %D ${stoch4hD}${stoch4hDEmoji}\n` +
              `     Stoch (1d): %K ${stoch1dK}${stoch1dKEmoji} ${stoch1dDir} | %D ${stoch1dD}${stoch1dDEmoji}\n` +
              `     Vol.Delta: ${deltaText}\n` +
              `     Fund.Rate: ${fundingRateEmoji}${format(coin.funding.current, 5)}%\n` +
              `     OI 5m: ${oi5mText}\n` +
              `     OI 15m: ${oi15mText}\n` +
+             `     Suporte: ${formatPrice(coin.supportResistance.support)}\n` +
+             `     Resistência: ${formatPrice(coin.supportResistance.resistance)}\n` +
              anomalyText;
     })).then(results => results.join('\n'));
     skullAlertText += `\n☑︎ 🤖 Gerencie seu risco - @J4Rviz`;
@@ -515,11 +500,11 @@ async function sendMonitorAlert(coins) {
       parse_mode: 'Markdown',
       disable_web_page_preview: true
     }));
-    logger.info('Alerta de moedas com caveira enviado com sucesso');
+    logger.info('Alerta de moedas com RSI em sobrecompra enviado com sucesso');
   }
 
-  if (starCoins.length === 0 && skullCoins.length === 0) {
-    logger.info('Nenhuma moeda válida para alertas (estrela ou caveira), nenhum alerta enviado.');
+  if (topLowRsi.length === 0 && topHighRsi.length === 0) {
+    logger.info('Nenhuma moeda com RSI < 25 ou > 75, nenhum alerta enviado.');
   } else {
     logger.info('Alertas de monitoramento processados com sucesso');
   }
@@ -552,6 +537,15 @@ async function checkCoins() {
           return null;
         }
 
+        const ohlcv1hRaw = getCachedData(`ohlcv_${symbol}_1h`) ||
+          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '1h', undefined, config.RSI_PERIOD + 1));
+        setCachedData(`ohlcv_${symbol}_1h`, ohlcv1hRaw);
+        const ohlcv1h = normalizeOHLCV(ohlcv1hRaw);
+        if (!ohlcv1h.length) {
+          logger.warn(`Dados OHLCV insuficientes para ${symbol} (1h), pulando...`);
+          return null;
+        }
+
         const ohlcv4hRaw = getCachedData(`ohlcv_${symbol}_4h`) ||
           await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '4h', undefined, 8));
         setCachedData(`ohlcv_${symbol}_4h`, ohlcv4hRaw);
@@ -570,7 +564,17 @@ async function checkCoins() {
           return null;
         }
 
+        const ohlcv50Raw = getCachedData(`ohlcv_${symbol}_50`) ||
+          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '15m', undefined, 50));
+        setCachedData(`ohlcv_${symbol}_50`, ohlcv50Raw);
+        const ohlcv50 = normalizeOHLCV(ohlcv50Raw);
+        if (!ohlcv50.length) {
+          logger.warn(`Dados OHLCV insuficientes para ${symbol} (50 períodos), pulando...`);
+          return null;
+        }
+
         const rsi = calculateRSI(ohlcv15m);
+        const rsi1h = calculateRSI(ohlcv1h);
         const atr = calculateATR(ohlcv15m);
         const lsr = (await fetchLSR(symbol)).value;
         const funding = await fetchFundingRate(symbol);
@@ -579,20 +583,14 @@ async function checkCoins() {
         const oi15m = await fetchOpenInterest(symbol, '15m');
         const stoch4h = calculateStochastic(ohlcv4h);
         const stoch1d = calculateStochastic(ohlcv1d);
+        const supportResistance = calculateSupportResistance(ohlcv50);
 
-        // Atualizar picos de RSI
         updateRsiPeaks(symbol, rsi);
-
         const volumeSpike = await detectVolumeSpike(symbol);
-        const fundingAnomaly = await detectFundingRateChange(symbol, funding.current);
+        const fundingAnomaly = await detectFundingRateChange(symbol, coin.funding.current);
         const anomalyDetected = volumeSpike || fundingAnomaly;
 
-        if (volume < config.MIN_VOLUME_USDT || oi15m.value < config.MIN_OPEN_INTEREST) {
-          logger.info(`Par ${symbol} filtrado por baixa liquidez: Volume=${volume}, OI=${oi15m.value}`);
-          return null;
-        }
-
-        return { symbol, price, rsi, atr, lsr, funding, delta, oi5m, oi15m, volume, volumeSpike, fundingAnomaly, anomalyDetected, stoch4h, stoch1d };
+        return { symbol, price, rsi, rsi1h, atr, lsr, funding, delta, oi5m, oi15m, volume, volumeSpike, fundingAnomaly, anomalyDetected, stoch4h, stoch1d, supportResistance };
       } catch (e) {
         logger.warn(`Erro ao processar ${symbol}: ${e.message}`);
         return null;
@@ -613,7 +611,7 @@ async function checkCoins() {
 async function main() {
   logger.info('Iniciando monitor de moedas');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium RSI 15m...!'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium Monitor...!'));
     await checkCoins();
     setInterval(checkCoins, config.INTERVALO_ALERTA_MS);
   } catch (e) {
