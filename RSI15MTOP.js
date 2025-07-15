@@ -17,7 +17,7 @@ const config = {
   LIMIT_TRADES_DELTA: 100,
   VOLUME_SPIKE_THRESHOLD: 2,
   FUNDING_RATE_CHANGE_THRESHOLD: 0.005,
-  RSI_OVERSOLD_THRESHOLD: 25, // Limite de sobrevenda
+  RSI_OVERSOLD_THRESHOLD: 30, // Limite de sobrevenda
   RSI_OVERBOUGHT_THRESHOLD: 75 // Limite de sobrecompra
 };
 
