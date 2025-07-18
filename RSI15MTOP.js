@@ -547,7 +547,7 @@ async function sendAlertStochasticCross(symbol, data) {
     );
     if (!foiAlertado) {
       alertText = `🟢*Stoch 4h⤴️ Compra /Reversão *\n\n` +
-                  `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
+                  `🔹Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
@@ -567,7 +567,7 @@ async function sendAlertStochasticCross(symbol, data) {
                   `   Liquid. Bear: ${sellZonesText}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
-                  ` ☑︎ Gerencie seu Risco - @J4Rviz\n`;
+                  ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'buy', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
@@ -579,7 +579,7 @@ async function sendAlertStochasticCross(symbol, data) {
     );
     if (!foiAlertado) {
       alertText = `🔴*Stoch 4h⤵️ / Pivô Alta⤴︎ *\n\n` +
-                  `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
+                  `🔹Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
@@ -599,7 +599,7 @@ async function sendAlertStochasticCross(symbol, data) {
                   `   Liquid. Bear: ${sellZonesText}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
-                  ` ☑︎ Gerencie seu Risco - @J4Rviz\n`;
+                  ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'sell', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
@@ -698,7 +698,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.1 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.2 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
   } catch (e) {
