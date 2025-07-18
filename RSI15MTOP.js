@@ -546,7 +546,7 @@ async function sendAlertStochasticCross(symbol, data) {
       r.direcao === 'buy' && (agora - r.timestamp) < config.TEMPO_COOLDOWN_MS
     );
     if (!foiAlertado) {
-      alertText = `🟢*Stoch 4h ⤴️ *\n\n` +
+      alertText = `🟢*Stoch 4h⤴️ Compra /Reversão *\n\n` +
                   `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
@@ -563,10 +563,10 @@ async function sendAlertStochasticCross(symbol, data) {
                   `⛔ Stop: ${stopBuy}\n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
-                  `   Liquid. Compra: ${buyZonesText}\n` +
-                  `   Liquid. Venda: ${sellZonesText}\n` +
-                  `   POC Bull: ${vpBuyZonesText}\n` +
-                  `   POC Bear: ${vpSellZonesText}\n` +
+                  `   Liquid. Bull: ${buyZonesText}\n` +
+                  `   Liquid. Bear: ${sellZonesText}\n` +
+                  `   Poc Bull: ${vpBuyZonesText}\n` +
+                  `   Poc Bear: ${vpSellZonesText}\n` +
                   ` ☑︎ Gerencie seu Risco - @J4Rviz\n`;
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'buy', timestamp: agora });
@@ -578,7 +578,7 @@ async function sendAlertStochasticCross(symbol, data) {
       r.direcao === 'sell' && (agora - r.timestamp) < config.TEMPO_COOLDOWN_MS
     );
     if (!foiAlertado) {
-      alertText = `🔴*Stoch 4h ⤵️ *\n\n` +
+      alertText = `🔴*Stoch 4h⤵️ / Pivô Alta⤴︎ *\n\n` +
                   `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
@@ -595,10 +595,10 @@ async function sendAlertStochasticCross(symbol, data) {
                   `⛔ Stop: ${stopSell}\n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
-                  `   Liquid. Compra: ${buyZonesText}\n` +
-                  `   Liquid. Venda: ${sellZonesText}\n` +
-                  `   POC Bull: ${vpBuyZonesText}\n` +
-                  `   POC Bear: ${vpSellZonesText}\n` +
+                  `   Liquid. Bull: ${buyZonesText}\n` +
+                  `   Liquid. Bear: ${sellZonesText}\n` +
+                  `   Poc Bull: ${vpBuyZonesText}\n` +
+                  `   Poc Bear: ${vpSellZonesText}\n` +
                   ` ☑︎ Gerencie seu Risco - @J4Rviz\n`;
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'sell', timestamp: agora });
@@ -698,7 +698,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch6 4h 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.1 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
   } catch (e) {
