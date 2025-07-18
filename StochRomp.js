@@ -567,8 +567,6 @@ async function sendAlertStochasticCross(symbol, data) {
                   `   Liquid. Bear: ${sellZonesText}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
-                  `   Order Book Bull: ${obBuyZonesText}\n` +
-                  `   Order Book Bear: ${obSellZonesText}\n` +
                   ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'buy', timestamp: agora });
@@ -601,8 +599,6 @@ async function sendAlertStochasticCross(symbol, data) {
                   `   Liquid. Bear: ${sellZonesText}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
-                  `   Order Book Bull: ${obBuyZonesText}\n` +
-                  `   Order Book Bear: ${obSellZonesText}\n` +
                   ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'sell', timestamp: agora });
@@ -710,8 +706,8 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Liquid. Compra: ${buyZonesText}\n` +
                   `   Liquid. Venda: ${sellZonesText}\n` +
-                  `   POC Bull: ${vpBuyZonesText}\n` +
-                  `   POC Bear: ${vpSellZonesText}\n` +
+                  `   Poc Bull: ${vpBuyZonesText}\n` +
+                  `   Poc Bear: ${vpSellZonesText}\n` +
                   `☑︎ Gerencie seu Risco -🤖 @J4Rviz`;
       state.ultimoRompimento[symbol]['15m'] = agora;
       state.ultimoRompimento[symbol].historico.push({ nivel: nivelRompido, direcao: 'alta', timestamp: agora });
@@ -749,8 +745,8 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Liquid. Compra: ${buyZonesText}\n` +
                   `   Liquid. Venda: ${sellZonesText}\n` +
-                  `   POC Bull: ${vpBuyZonesText}\n` +
-                  `   POC Bear: ${vpSellZonesText}\n` +
+                  `   Poc Bull: ${vpBuyZonesText}\n` +
+                  `   Poc Bear: ${vpSellZonesText}\n` +
                   `☑︎ Gerencie seu Risco -🤖 @J4Rviz`;
       state.ultimoRompimento[symbol]['15m'] = agora;
       state.ultimoRompimento[symbol].historico.push({ nivel: nivelRompido, direcao: 'baixa', timestamp: agora });
