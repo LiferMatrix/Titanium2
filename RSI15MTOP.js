@@ -20,11 +20,12 @@ const config = {
   STOCHASTIC_SELL_MIN: 20, // Limite mínimo para venda (4h e Diário)
   LSR_BUY_MAX: 2.7, // Limite máximo de LSR para compra
   LSR_SELL_MIN: 2.7, // Limite mínimo de LSR para venda
-  DELTA_BUY_MIN: 5, // Limite mínimo de Delta Agressivo para compra (%)
+  DELTA_BUY_MIN: 10, // Limite mínimo de Delta Agressivo para compra (%)
   DELTA_SELL_MAX: -10, // Limite máximo de Delta Agressivo para venda (%)
   CACHE_TTL: 10 * 60 * 1000, // 10 minutos
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
+  VOLATILITY_MIN: 0.005, // Volatilidade mínima (ATR/preço ≥ 0.5%)
 };
 
 // Logger
@@ -182,6 +183,13 @@ function calculateEMA(data, period) {
   return ema.filter(v => !isNaN(v));
 }
 
+function calculateVolatility(data, price) {
+  const atrValues = calculateATR(data);
+  if (!atrValues.length || !price) return 0;
+  const atr = atrValues[atrValues.length - 1];
+  return (atr / price) || 0; // Volatilidade como ATR/preço
+}
+
 function detectarQuebraEstrutura(ohlcv) {
   if (!ohlcv || ohlcv.length < 2) return { estruturaAlta: 0, estruturaBaixa: 0, buyLiquidityZones: [], sellLiquidityZones: [] };
   const lookbackPeriod = 20;
@@ -246,6 +254,7 @@ async function fetchLiquidityZones(symbol) {
     const liquidityThreshold = 0.5;
     const totalBidVolume = bids.reduce((sum, [, vol]) => sum + vol, 0);
     const totalAskVolume = asks.reduce((sum, [, vol]) => sum + vol, 0);
+ternate
     const buyLiquidityZones = bids
       .filter(([price, volume]) => volume >= totalBidVolume * liquidityThreshold)
       .map(([price]) => price);
@@ -448,6 +457,12 @@ async function sendAlertStochasticCross(symbol, data) {
   const isNearBuyZone = zonas.buyLiquidityZones.some(zone => Math.abs(price - zone) <= atr * 0.01);
   const isNearSellZone = zonas.sellLiquidityZones.some(zone => Math.abs(price - zone) <= atr * 0.01);
 
+  const volatility = calculateVolatility(ohlcv15m, price);
+  if (volatility < config.VOLATILITY_MIN) {
+    logger.info(`Volatilidade insuficiente para ${symbol}: ${volatility.toFixed(4)} < ${config.VOLATILITY_MIN}`);
+    return;
+  }
+
   const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol.replace('/', '')}&interval=15`;
   const rsi1hEmoji = rsi1h > 60 ? "☑︎" : rsi1h < 40 ? "☑︎" : "";
   let lsrSymbol = '🔘Consol.';
@@ -500,7 +515,7 @@ async function sendAlertStochasticCross(symbol, data) {
   const stopSell = format(price + 3.5 * atr);
 
   let alertText = '';
-  // Condições para compra: %K > %D (4h), %K <= 75 (4h e Diário), RSI 1h < 60, OI 5m e 15m subindo, LSR < 2.7, Delta >= 5%, Preço perto de buyLiquidityZone, EMA 34 > EMA 89 (3m)
+  // Condições para compra: %K > %D (4h), %K <= 75 (4h e Diário), RSI 1h < 60, OI 5m e 15m subindo, LSR < 2.7, Delta >= 10%, EMA 34 > EMA 89 (3m), Volatilidade >= 0.5%
   const isBuySignal = estocastico4h && estocasticoD &&
                       estocastico4h.k > estocastico4h.d && 
                       estocastico4h.k <= config.STOCHASTIC_BUY_MAX && 
@@ -510,9 +525,10 @@ async function sendAlertStochasticCross(symbol, data) {
                       oi15m.isRising && 
                       (lsr.value === null || lsr.value < config.LSR_BUY_MAX) &&
                       aggressiveDelta.deltaPercent >= config.DELTA_BUY_MIN &&
-                      ema34_3m > ema89_3m;
+                      ema34_3m > ema89_3m &&
+                      volatility >= config.VOLATILITY_MIN;
   
-  // Condições para venda: %K < %D (4h), %K >= 20 (4h e Diário), RSI 1h > 60, OI 5m e 15m caindo, LSR > 2.7, Delta <= -10%, Preço perto de sellLiquidityZone, EMA 34 < EMA 89 (3m)
+  // Condições para venda: %K < %D (4h), %K >= 20 (4h e Diário), RSI 1h > 60, OI 5m e 15m caindo, LSR > 2.7, Delta <= -10%, EMA 34 < EMA 89 (3m), Volatilidade >= 0.5%
   const isSellSignal = estocastico4h && estocasticoD &&
                        estocastico4h.k < estocastico4h.d && 
                        estocastico4h.k >= config.STOCHASTIC_SELL_MIN && 
@@ -522,14 +538,15 @@ async function sendAlertStochasticCross(symbol, data) {
                        !oi15m.isRising && 
                        (lsr.value === null || lsr.value > config.LSR_SELL_MIN) &&
                        aggressiveDelta.deltaPercent <= config.DELTA_SELL_MAX &&
-                       ema34_3m < ema89_3m;
+                       ema34_3m < ema89_3m &&
+                       volatility >= config.VOLATILITY_MIN;
 
   if (isBuySignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
       r.direcao === 'buy' && (agora - r.timestamp) < config.TEMPO_COOLDOWN_MS
     );
     if (!foiAlertado) {
-      alertText = `🟢*Stoch 4h ⤴️ - Analisar... *\n\n` +
+      alertText = `🟢*Stoch 4h ⤴️ *\n\n` +
                   `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
@@ -554,14 +571,14 @@ async function sendAlertStochasticCross(symbol, data) {
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'buy', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearBuyZone=${isNearBuyZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}`);
+      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearBuyZone=${isNearBuyZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}, Volatility=${volatility.toFixed(4)}`);
     }
   } else if (isSellSignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
       r.direcao === 'sell' && (agora - r.timestamp) < config.TEMPO_COOLDOWN_MS
     );
     if (!foiAlertado) {
-      alertText = `🔴*Stoch 4h ⤵️ - Analisar...*\n\n` +
+      alertText = `🔴*Stoch 4h ⤵️ *\n\n` +
                   `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
@@ -586,7 +603,7 @@ async function sendAlertStochasticCross(symbol, data) {
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'sell', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearSellZone=${isNearSellZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}`);
+      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearSellZone=${isNearSellZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}, Volatility=${volatility.toFixed(4)}`);
     }
   }
 
@@ -681,7 +698,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium Stoch 4h 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch6 4h 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
   } catch (e) {
