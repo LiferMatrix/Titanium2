@@ -515,7 +515,7 @@ async function sendAlertStochasticCross(symbol, data) {
   const stopSell = format(price + 3.5 * atr);
 
   let alertText = '';
-  // Condições para compra: %K > %D (4h), %K <= 75 (4h e Diário), RSI 1h < 60, OI 5m e 15m subindo, LSR < 2.7, Delta >= 10%, EMA 34 > EMA 89 (3m), Volatilidade >= 0.5%
+  // Condições para compra: %K > %D (4h), %K <= 75 (4h e Diário), RSI 1h < 60, OI 5m e 15m subindo, LSR < 2.7, Delta >= 10%, EMA 34 > EMA 89 (3m), Volatilidade >= 0.5%, Funding Rate caindo
   const isBuySignal = estocastico4h && estocasticoD &&
                       estocastico4h.k > estocastico4h.d && 
                       estocastico4h.k <= config.STOCHASTIC_BUY_MAX && 
@@ -526,9 +526,10 @@ async function sendAlertStochasticCross(symbol, data) {
                       (lsr.value === null || lsr.value < config.LSR_BUY_MAX) &&
                       aggressiveDelta.deltaPercent >= config.DELTA_BUY_MIN &&
                       ema34_3m > ema89_3m &&
-                      volatility >= config.VOLATILITY_MIN;
+                      volatility >= config.VOLATILITY_MIN &&
+                      !fundingRate.isRising;
   
-  // Condições para venda: %K < %D (4h), %K >= 20 (4h e Diário), RSI 1h > 60, OI 5m e 15m caindo, LSR > 2.7, Delta <= -10%, EMA 34 < EMA 89 (3m), Volatilidade >= 0.5%
+  // Condições para venda: %K < %D (4h), %K >= 20 (4h e Diário), RSI 1h > 60, OI 5m e 15m caindo, LSR > 2.7, Delta <= -10%, EMA 34 < EMA 89 (3m), Volatilidade >= 0.5%, Funding Rate subindo
   const isSellSignal = estocastico4h && estocasticoD &&
                        estocastico4h.k < estocastico4h.d && 
                        estocastico4h.k >= config.STOCHASTIC_SELL_MIN && 
@@ -539,7 +540,8 @@ async function sendAlertStochasticCross(symbol, data) {
                        (lsr.value === null || lsr.value > config.LSR_SELL_MIN) &&
                        aggressiveDelta.deltaPercent <= config.DELTA_SELL_MAX &&
                        ema34_3m < ema89_3m &&
-                       volatility >= config.VOLATILITY_MIN;
+                       volatility >= config.VOLATILITY_MIN &&
+                       fundingRate.isRising;
 
   if (isBuySignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
@@ -849,7 +851,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.2 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.3 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
   } catch (e) {
