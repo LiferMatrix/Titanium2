@@ -21,6 +21,7 @@ const config = {
   ATR_PERCENT_MIN: 0.5,
   ATR_PERCENT_MAX: 3.0,
   CACHE_TTL: 10 * 60 * 1000,
+  EMA_13_PERIOD: 13, // Novo: Período da EMA 13
   EMA_34_PERIOD: 34,
   EMA_89_PERIOD: 89,
   MAX_CACHE_SIZE: 100,
@@ -505,7 +506,7 @@ function getSetaDirecao(current, previous) {
 }
 
 async function sendAlert1h2h(symbol, data) {
-  const { ohlcv15m, ohlcv3m, ohlcv1h, ohlcvDiario, ohlcv4h, price, wpr2h, wpr1h, rsi1h, atr, lsr, zonas, volumeProfile, orderBookLiquidity, isOIRising5m, estocasticoD, estocastico4h, fundingRate, oi15m } = data;
+  const { ohlcv15m, ohlcv3m, ohlcv1h, ohlcvDiario, ohlcv4h, price, wpr2h, wpr1h, rsi1h, atr, lsr, zonas, volumeProfile, orderBookLiquidity, isOIRising5m, estocasticoD, estocastico4h, fundingRate, oi15m, ema13_3m, ema34_3m, previousEma13_3m, previousEma34_3m } = data;
   const agora = Date.now();
   if (state.ultimoAlertaPorAtivo[symbol]?.['1h_2h'] && agora - state.ultimoAlertaPorAtivo[symbol]['1h_2h'] < config.TEMPO_COOLDOWN_MS) return;
   const aggressiveDelta = await calculateAggressiveDelta(symbol);
@@ -529,15 +530,27 @@ async function sendAlert1h2h(symbol, data) {
   const format = v => isNaN(v) ? 'N/A' : v.toFixed(precision);
   const entryLow = format(price - 0.3 * atr);
   const entryHigh = format(price + 0.5 * atr);
+  const isBuySignal = state.wprTriggerState[symbol]['1h_2h'].buyTriggered && 
+                      (lsr.value === null || lsr.value < 1.7) && 
+                      atrPercent >= config.ATR_PERCENT_MIN && 
+                      atrPercent <= config.ATR_PERCENT_MAX && 
+                      aggressiveDelta.isSignificant && 
+                      aggressiveDelta.isBuyPressure && 
+                      isOIRising5m && 
+                      oi15m.isRising &&
+                      ema13_3m > ema34_3m && // EMA 13 > EMA 34
+                      previousEma13_3m <= previousEma34_3m; // Cruzamento de alta
   const isSellSignal = state.wprTriggerState[symbol]['1h_2h'].sellTriggered && 
                       rsi1h > 68 && 
-                      (lsr.value === null || lsr.value >= 2.5) && 
+                      (lsr.value === null || lsr.value >= 2.8) && 
                       atrPercent >= config.ATR_PERCENT_MIN && 
                       atrPercent <= config.ATR_PERCENT_MAX && 
                       aggressiveDelta.isSignificant && 
                       !aggressiveDelta.isBuyPressure && 
                       !isOIRising5m && 
-                      !oi15m.isRising;
+                      !oi15m.isRising &&
+                      ema13_3m < ema34_3m && // EMA 13 < EMA 34
+                      previousEma13_3m >= previousEma34_3m; // Cruzamento de baixa
   const targets = isSellSignal
     ? [2, 4, 6, 8].map(mult => format(price - mult * atr)).join(" / ")
     : [2, 4, 6, 8].map(mult => format(price + mult * atr)).join(" / ");
@@ -576,7 +589,7 @@ async function sendAlert1h2h(symbol, data) {
     `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
     `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
     `🔹 Fund. R: ${fundingRateText}\n` +
-    `🔸 Vol.Delta : ${deltaText}\n` +
+    `🔸 Vol.Delta: ${deltaText}\n` +
     `🔹 Stoch Diário %K: ${estocasticoD ? estocasticoD.k.toFixed(2) : '--'} ${stochDEmoji} ${direcaoD}\n` +
     `🔹 Stoch 4H %K: ${estocastico4h ? estocastico4h.k.toFixed(2) : '--'} ${stoch4hEmoji} ${direcao4h}\n` +
     `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
@@ -586,19 +599,12 @@ async function sendAlert1h2h(symbol, data) {
     `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
     `   Liquid. Compra: ${buyZonesText}\n` +
     `   Liquid. Venda: ${sellZonesText}\n` +
-    `   POC Bull: ${vpBuyZonesText}\n` +
-    `   POC Bear: ${vpSellZonesText}\n` +
+    `   Poc Bull: ${vpBuyZonesText}\n` +
+    `   Poc Bear: ${vpSellZonesText}\n` +
     `☑︎Gerencie seu Risco 🤖 @J4Rviz\n`;
-  if (state.wprTriggerState[symbol]['1h_2h'].buyTriggered && 
-      (lsr.value === null || lsr.value < 1.7) && 
-      atrPercent >= config.ATR_PERCENT_MIN && 
-      atrPercent <= config.ATR_PERCENT_MAX && 
-      aggressiveDelta.isSignificant && 
-      aggressiveDelta.isBuyPressure && 
-      isOIRising5m && 
-      oi15m.isRising) {
+  if (isBuySignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Reversão -✳️Compra WPR✳️*\n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Reversão -✳️Compra✳️*\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -610,7 +616,7 @@ async function sendAlert1h2h(symbol, data) {
     }
   } else if (isSellSignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Venda - 🔻Correção WPR🔻*\n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Venda -🔻Correção/Exaustão🔻*\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -702,7 +708,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
     );
     if (!foiAlertado) {
       alertText = `🟢 *Rompimento de 🚀Alta🚀*\n\n` +
-                  `🔹 Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
+                  `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço Atual: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
@@ -718,8 +724,8 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Liquid. Compra: ${buyZonesText}\n` +
                   `   Liquid. Venda: ${sellZonesText}\n` +
-                  `   POC Bull: ${vpBuyZonesText}\n` +
-                  `   POC Bear: ${vpSellZonesText}\n` +
+                  `   Poc Bull: ${vpBuyZonesText}\n` +
+                  `   Poc Bear: ${vpSellZonesText}\n` +
                   `☑︎ Gerencie seu Risco -🤖 @J4Rviz`;
       state.ultimoRompimento[symbol]['15m'] = agora;
       state.ultimoRompimento[symbol].historico.push({ nivel: nivelRompido, direcao: 'alta', timestamp: agora });
@@ -744,7 +750,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
     );
     if (!foiAlertado) {
       alertText = `🔴 *Rompimento de 🔻Baixa🔻*\n\n` +
-                  `🔹 Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
+                  `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço Atual: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
@@ -760,8 +766,8 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Liquid. Compra: ${buyZonesText}\n` +
                   `   Liquid. Venda: ${sellZonesText}\n` +
-                  `   POC Bull: ${vpBuyZonesText}\n` +
-                  `   POC Bear: ${vpSellZonesText}\n` +
+                  `   Poc Bull: ${vpBuyZonesText}\n` +
+                  `   Poc Bear: ${vpSellZonesText}\n` +
                   `☑︎ Gerencie seu Risco -🤖 @J4Rviz`;
       state.ultimoRompimento[symbol]['15m'] = agora;
       state.ultimoRompimento[symbol].historico.push({ nivel: nivelRompido, direcao: 'baixa', timestamp: agora });
@@ -826,8 +832,9 @@ async function checkConditions() {
       const volumeProfile = calculateVolumeProfile(ohlcv15m);
       const estocasticoD = calculateStochastic(ohlcvDiario, 5, 3, 3);
       const estocastico4h = calculateStochastic(ohlcv4h, 5, 3, 3);
-      const aggressiveDelta = await calculateAggressiveDelta(symbol);
-      if (!wpr2hValues.length || !wpr1hValues.length || !rsi1hValues.length || !atrValues.length) {
+      const ema13_3mValues = calculateEMA(ohlcv3m, config.EMA_13_PERIOD);
+      const ema34_3mValues = calculateEMA(ohlcv3m, config.EMA_34_PERIOD);
+      if (!wpr2hValues.length || !wpr1hValues.length || !rsi1hValues.length || !atrValues.length || !ema13_3mValues.length || !ema34_3mValues.length) {
         logger.warn(`Indicadores insuficientes para ${symbol}, pulando...`);
         return;
       }
@@ -842,10 +849,14 @@ async function checkConditions() {
         lsr, zonas,
         volumeProfile, orderBookLiquidity: await fetchLiquidityZones(symbol),
         isOIRising5m: oi5m.isRising,
-        estocasticoD, estocastico4h, fundingRate, oi15m
+        estocasticoD, estocastico4h, fundingRate, oi15m,
+        ema13_3m: ema13_3mValues[ema13_3mValues.length - 1],
+        ema34_3m: ema34_3mValues[ema34_3mValues.length - 1],
+        previousEma13_3m: ema13_3mValues[ema13_3mValues.length - 2] || 0,
+        previousEma34_3m: ema34_3mValues[ema34_3mValues.length - 2] || 0
       });
       // Chama o alerta de rompimento de estrutura
-      await sendAlertRompimentoEstrutura15m(symbol, currentPrice, zonas, ohlcv15m, rsi1hValues[rsi1hValues.length - 1], lsr, fundingRate, aggressiveDelta, estocasticoD, estocastico4h, oi15m, atrValues[atrValues.length - 1]);
+      await sendAlertRompimentoEstrutura15m(symbol, currentPrice, zonas, ohlcv15m, rsi1hValues[rsi1hValues.length - 1], lsr, fundingRate, await calculateAggressiveDelta(symbol), estocasticoD, estocastico4h, oi15m, atrValues[atrValues.length - 1]);
     }, 5);
   } catch (e) {
     logger.error(`Erro ao processar condições: ${e.message}`);
@@ -855,7 +866,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando scalp');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPR💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPR++💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_3M_MS);
   } catch (e) {
