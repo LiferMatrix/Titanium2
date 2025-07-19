@@ -21,7 +21,7 @@ const config = {
   ATR_PERCENT_MIN: 0.5,
   ATR_PERCENT_MAX: 3.0,
   CACHE_TTL: 10 * 60 * 1000,
-  EMA_13_PERIOD: 13, // Novo: Período da EMA 13
+  EMA_13_PERIOD: 13,
   EMA_34_PERIOD: 34,
   EMA_89_PERIOD: 89,
   MAX_CACHE_SIZE: 100,
@@ -45,7 +45,8 @@ const state = {
   wprTriggerState: {},
   ultimoRompimento: {},
   ultimoEMACruzamento: {},
-  dataCache: new Map()
+  dataCache: new Map(),
+  ultimoWPRReset: {} // [ALTERAÇÃO] Adicionado para rastrear o último reset do WPR
 };
 
 // Validação de variáveis de ambiente
@@ -465,7 +466,7 @@ async function calculateAggressiveDelta(symbol, timeframe = '3m', limit = 100) {
     let sellVolume = 0;
     const volumes = trades.map(trade => trade.amount).filter(amount => !isNaN(amount));
     const avgVolume = volumes.length > 0 ? volumes.reduce((sum, v) => sum + v, 0) / volumes.length : 0;
-    const minVolumeThreshold = avgVolume * 0.001; // 0.1% do volume médio
+    const minVolumeThreshold = avgVolume * 0.001;
     for (const trade of trades) {
       const { side, amount, price } = trade;
       if (!side || !amount || !price || isNaN(amount) || isNaN(price) || amount < minVolumeThreshold) continue;
@@ -512,10 +513,14 @@ async function sendAlert1h2h(symbol, data) {
   const aggressiveDelta = await calculateAggressiveDelta(symbol);
   const atrPercent = (atr / price) * 100;
   if (!state.wprTriggerState[symbol]) state.wprTriggerState[symbol] = { '1h_2h': { buyTriggered: false, sellTriggered: false } };
+  // [ALTERAÇÃO] Rastrear o último reset do WPR com valores
+  if (!state.ultimoWPRReset[symbol]) state.ultimoWPRReset[symbol] = {};
   if (wpr2h <= config.WPR_LOW_THRESHOLD && wpr1h <= config.WPR_LOW_THRESHOLD) {
     state.wprTriggerState[symbol]['1h_2h'].buyTriggered = true;
+    state.ultimoWPRReset[symbol] = { type: 'alta', timestamp: agora, wpr1h: wpr1h, wpr2h: wpr2h }; // Reset de alta
   } else if (wpr2h >= config.WPR_HIGH_THRESHOLD && wpr1h >= config.WPR_HIGH_THRESHOLD) {
     state.wprTriggerState[symbol]['1h_2h'].sellTriggered = true;
+    state.ultimoWPRReset[symbol] = { type: 'baixa', timestamp: agora, wpr1h: wpr1h, wpr2h: wpr2h }; // Reset de baixa
   }
   if (!state.ultimoEstocastico[symbol]) state.ultimoEstocastico[symbol] = {};
   const kAnteriorD = state.ultimoEstocastico[symbol].kD || estocasticoD?.k || 0;
@@ -538,8 +543,8 @@ async function sendAlert1h2h(symbol, data) {
                       aggressiveDelta.isBuyPressure && 
                       isOIRising5m && 
                       oi15m.isRising &&
-                      ema13_3m > ema34_3m && // EMA 13 > EMA 34
-                      previousEma13_3m <= previousEma34_3m; // Cruzamento de alta
+                      ema13_3m > ema34_3m && 
+                      previousEma13_3m <= previousEma34_3m;
   const isSellSignal = state.wprTriggerState[symbol]['1h_2h'].sellTriggered && 
                       rsi1h > 68 && 
                       (lsr.value === null || lsr.value >= 2.8) && 
@@ -549,8 +554,8 @@ async function sendAlert1h2h(symbol, data) {
                       !aggressiveDelta.isBuyPressure && 
                       !isOIRising5m && 
                       !oi15m.isRising &&
-                      ema13_3m < ema34_3m && // EMA 13 < EMA 34
-                      previousEma13_3m >= previousEma34_3m; // Cruzamento de baixa
+                      ema13_3m < ema34_3m && 
+                      previousEma13_3m >= previousEma34_3m;
   const targets = isSellSignal
     ? [2, 4, 6, 8].map(mult => format(price - mult * atr)).join(" / ")
     : [2, 4, 6, 8].map(mult => format(price + mult * atr)).join(" / ");
@@ -689,12 +694,20 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
   const sellZonesText = zonas.sellLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpBuyZonesText = calculateVolumeProfile(ohlcv15m).buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = calculateVolumeProfile(ohlcv15m).sellLiquidityZones.map(format).join(' / ') || 'N/A';
+  // [ALTERAÇÃO] Adicionar mensagem do último reset do WPR com valores
+  let wprResetText = '🔹 Liquidação: 🔘Nenhuma Recente';
+  if (state.ultimoWPRReset[symbol] && (agora - state.ultimoWPRReset[symbol].timestamp) < config.TEMPO_COOLDOWN_MS) {
+    const reset = state.ultimoWPRReset[symbol];
+    const wpr1hValue = reset.wpr1h.toFixed(2);
+    const wpr2hValue = reset.wpr2h.toFixed(2);
+    wprResetText = `🔹 Liquidação : ${reset.type === 'alta' ? 'OB Comprador✅' : 'OB Vendedor✅ '} (WPR 1h: ${wpr1hValue}, 2h: ${wpr2hValue})`;
+  }
   if (isValidPreviousCandle && 
       zonas.estruturaAlta > 0 && 
       previousClose < zonas.estruturaAlta && 
       currentHigh >= zonas.estruturaAlta && 
       isPriceRising && 
-      (lsr.value === null || lsr.value < 1.7) && 
+      (lsr.value === null || lsr.value < 1.8) && 
       aggressiveDelta.isBuyPressure && 
       estocasticoD?.k < 73 && 
       estocastico4h?.k < 73 &&
@@ -710,6 +723,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       alertText = `🟢 *Rompimento de 🚀Alta🚀*\n\n` +
                   `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço Atual: ${format(price)}\n` +
+                  `${wprResetText}\n` + // [ALTERAÇÃO] Adiciona mensagem do reset
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
                   `🔹 Fund. R: ${fundingRateText}\n` +
@@ -752,6 +766,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       alertText = `🔴 *Rompimento de 🔻Baixa🔻*\n\n` +
                   `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço Atual: ${format(price)}\n` +
+                  `${wprResetText}\n` + // [ALTERAÇÃO] Adiciona mensagem do reset
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
                   `🔹 Fund. R: ${fundingRateText}\n` +
@@ -838,7 +853,6 @@ async function checkConditions() {
         logger.warn(`Indicadores insuficientes para ${symbol}, pulando...`);
         return;
       }
-      // Chama o alerta WPR
       await sendAlert1h2h(symbol, {
         ohlcv15m, ohlcv3m, ohlcv1h, ohlcvDiario, ohlcv4h,
         price: currentPrice,
@@ -855,7 +869,6 @@ async function checkConditions() {
         previousEma13_3m: ema13_3mValues[ema13_3mValues.length - 2] || 0,
         previousEma34_3m: ema34_3mValues[ema34_3mValues.length - 2] || 0
       });
-      // Chama o alerta de rompimento de estrutura
       await sendAlertRompimentoEstrutura15m(symbol, currentPrice, zonas, ohlcv15m, rsi1hValues[rsi1hValues.length - 1], lsr, fundingRate, await calculateAggressiveDelta(symbol), estocasticoD, estocastico4h, oi15m, atrValues[atrValues.length - 1]);
     }, 5);
   } catch (e) {
@@ -866,7 +879,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando scalp');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPR++💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPR+++💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_3M_MS);
   } catch (e) {
