@@ -41,7 +41,7 @@ const logger = winston.createLogger({
 // Estado global
 const state = {
   ultimoAlertaPorAtivo: {},
-  ultimoRompimento: {}, // Added for Rompimento Estrutura alerts
+  ultimoRompimento: {},
   ultimoEstocastico: {},
   dataCache: new Map()
 };
@@ -416,6 +416,7 @@ async function calculateAggressiveDelta(symbol, timeframe = '15m', limit = 100) 
     const delta = buyVolume - sellVolume;
     const totalVolume = buyVolume + sellVolume;
     const deltaPercent = totalVolume !== 0 ? (delta / totalVolume * 100).toFixed(2) : '0.00';
+ German
     const result = {
       delta,
       deltaPercent: parseFloat(deltaPercent),
@@ -586,7 +587,7 @@ async function sendAlertStochasticCross(symbol, data) {
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
                   `🔹 Fund. R: ${fundingRateText}\n` +
-                  `🔸 miettext : ${deltaText}\n` +
+                  `🔸 Vol.Delta : ${deltaText}\n` +
                   `🔹 Stoch Diário : ${estocasticoD ? estocasticoD.k.toFixed(2) : '--'} ${stochDEmoji} ${direcaoD}\n` +
                   `🔹 Stoch 4H %K: ${estocastico4h ? estocastico4h.k.toFixed(2) : '--'} ${stoch4hEmoji} ${direcao4h}\n` +
                   `🔹 ${oi5mText}\n` +
@@ -622,7 +623,7 @@ async function sendAlertStochasticCross(symbol, data) {
   }
 }
 
-async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, rsi1h, lsr, fundingRate, aggressiveDelta, estocasticoD, estocastico4h, oi15m) {
+async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, rsi1h, lsr, fundingRate, aggressiveDelta, estocasticoD, estocastico4h, oi15m, atr) {
   const agora = Date.now();
   if (!state.ultimoRompimento[symbol]) state.ultimoRompimento[symbol] = { historico: [] };
   if (state.ultimoRompimento[symbol]['15m'] && agora - state.ultimoRompimento[symbol]['15m'] < config.TEMPO_COOLDOWN_MS) return;
@@ -676,6 +677,13 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
   const sellZonesText = zonas.sellLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpBuyZonesText = calculateVolumeProfile(ohlcv15m).buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = calculateVolumeProfile(ohlcv15m).sellLiquidityZones.map(format).join(' / ') || 'N/A';
+  const entryLow = format(price - 0.3 * atr);
+  const entryHigh = format(price + 0.5 * atr);
+  const targetsBuy = [1.5, 3, 4.5, 6].map(mult => format(price + mult * atr)).join(" / ");
+  const targetsSell = [1.5, 3, 4.5, 6].map(mult => format(price - mult * atr)).join(" / ");
+  const stopBuy = format(price - 3.5 * atr);
+  const stopSell = format(price + 3.5 * atr);
+
   if (isValidPreviousCandle && 
       zonas.estruturaAlta > 0 && 
       previousClose < zonas.estruturaAlta && 
@@ -704,6 +712,9 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
                   `🔹 OI 15m: ${oiText}\n` +
                   `🔹 Stoch Diário %K: ${estocasticoD ? estocasticoD.k.toFixed(2) : '--'} ${stochDEmoji} ${direcaoD}\n` +
                   `🔹 Stoch 4H %K: ${estocastico4h ? estocastico4h.k.toFixed(2) : '--'} ${stoch4hEmoji} ${direcao4h}\n` +
+                  `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
+                  `🎯 Tps: ${targetsBuy}\n` +
+                  `⛔ Stop: ${stopBuy}\n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Liquid. Compra: ${buyZonesText}\n` +
@@ -743,6 +754,9 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
                   `🔹 OI 15m: ${oiText}\n` +
                   `🔹 Stoch Diário %K: ${estocasticoD ? estocasticoD.k.toFixed(2) : '--'} ${stochDEmoji} ${direcaoD}\n` +
                   `🔹 Stoch 4H %K: ${estocastico4h ? estocastico4h.k.toFixed(2) : '--'} ${stoch4hEmoji} ${direcao4h}\n` +
+                  `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
+                  `🎯 Tps: ${targetsSell}\n` +
+                  `⛔ Stop: ${stopSell}\n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Liquid. Compra: ${buyZonesText}\n` +
@@ -820,7 +834,6 @@ async function checkConditions() {
         return;
       }
 
-      // Call both alert functions
       await sendAlertStochasticCross(symbol, {
         ohlcv15m,
         ohlcv4h,
@@ -841,7 +854,7 @@ async function checkConditions() {
         ema89_3m: ema89_3mValues[ema89_3mValues.length - 1]
       });
 
-      await sendAlertRompimentoEstrutura15m(symbol, currentPrice, zonas, ohlcv15m, rsi1hValues[rsi1hValues.length - 1], lsr, fundingRate, aggressiveDelta, estocasticoD, estocastico4h, oi15m);
+      await sendAlertRompimentoEstrutura15m(symbol, currentPrice, zonas, ohlcv15m, rsi1hValues[rsi1hValues.length - 1], lsr, fundingRate, aggressiveDelta, estocasticoD, estocastico4h, oi15m, atrValues[atrValues.length - 1]);
     }, 5);
   } catch (e) {
     logger.error(`Erro ao processar condições: ${e.message}`);
@@ -851,7 +864,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.3 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.4 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
   } catch (e) {
