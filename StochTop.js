@@ -532,7 +532,7 @@ async function sendAlertStochasticCross(symbol, data) {
                        estocastico4h.k < estocastico4h.d && 
                        estocastico4h.k >= config.STOCHASTIC_SELL_MIN && 
                        estocasticoD.k >= config.STOCHASTIC_SELL_MIN &&
-                       rsi1h > 60 && 
+                       rsi1h > 68 && 
                        !oi5m.isRising &&
                        !oi15m.isRising && 
                        (lsr.value === null || lsr.value > config.LSR_SELL_MIN) &&
