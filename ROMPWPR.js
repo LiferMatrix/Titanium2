@@ -700,7 +700,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
     const reset = state.ultimoWPRReset[symbol];
     const wpr1hValue = reset.wpr1h.toFixed(2);
     const wpr2hValue = reset.wpr2h.toFixed(2);
-    wprResetText = `🔹 Liquidação : ${reset.type === 'alta' ? 'OB Comprador✅' : 'OB Vendedor✅ '} (WPR 1h: ${wpr1hValue}, 2h: ${wpr2hValue})`;
+    wprResetText = `🔹 Liquidação: ${reset.type === 'alta' ? 'Fluxo de Alta💹' : 'Fluxo de Baixa🚨'}`;
   }
   if (isValidPreviousCandle && 
       zonas.estruturaAlta > 0 && 
