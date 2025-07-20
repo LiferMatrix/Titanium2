@@ -17,7 +17,7 @@ const config = {
   STOCHASTIC_SMOOTH_K: 3,
   STOCHASTIC_PERIOD_D: 3,
   STOCHASTIC_BUY_MAX: 70, // Limite máximo para compra (4h e Diário)
-  STOCHASTIC_SELL_MIN: 50, // Limite mínimo para venda (4h e Diário)
+  STOCHASTIC_SELL_MIN: 80, // Limite mínimo para venda (4h e Diário)
   LSR_BUY_MAX: 1.5, // Limite máximo de LSR para compra
   LSR_SELL_MIN: 2.9, // Limite mínimo de LSR para venda
   DELTA_BUY_MIN: 10, // Limite mínimo de Delta Agressivo para compra (%)
