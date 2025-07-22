@@ -25,7 +25,7 @@ const config = {
   CACHE_TTL: 10 * 60 * 1000, // 10 minutos
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
-  VOLATILITY_MIN: 0.005, // Volatilidade mínima (ATR/preço ≥ 0.5%)
+  VOLATILITY_MIN: 0.009, // Volatilidade mínima (ATR/preço ≥ 0.5%)
 };
 
 // Logger
