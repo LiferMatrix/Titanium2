@@ -505,12 +505,10 @@ async function sendAlertStochasticCross(symbol, data) {
   const stochDEmoji = estocasticoD ? getStochasticEmoji(estocasticoD.k) : "";
   const stoch4hEmoji = estocastico4h ? getStochasticEmoji(estocastico4h.k) : "";
 
-  const buyZonesText = zonas.buyLiquidityZones.map(format).join(' / ') || 'N/A';
-  const sellZonesText = zonas.sellLiquidityZones.map(format).join(' / ') || 'N/A';
+  
   const vpBuyZonesText = volumeProfile.buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = volumeProfile.sellLiquidityZones.map(format).join(' / ') || 'N/A';
-  const obBuyZonesText = orderBookLiquidity.buyLiquidityZones.map(format).join(' / ') || 'N/A';
-  const obSellZonesText = orderBookLiquidity.sellLiquidityZones.map(format).join(' / ') || 'N/A';
+  
 
   const entryLow = format(price - 0.3 * atr);
   const entryHigh = format(price + 0.5 * atr);
@@ -570,8 +568,6 @@ async function sendAlertStochasticCross(symbol, data) {
                   `⛔ Stop: ${stopBuy}\n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
-                  `   Liquid. Bull: ${buyZonesText}\n` +
-                  `   Liquid. Bear: ${sellZonesText}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
                   ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
@@ -602,8 +598,6 @@ async function sendAlertStochasticCross(symbol, data) {
                   `⛔ Stop: ${stopSell}\n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
-                  `   Liquid. Bull: ${buyZonesText}\n` +
-                  `   Liquid. Bear: ${sellZonesText}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
                   ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
@@ -706,7 +700,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.22 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.23 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
   } catch (e) {
