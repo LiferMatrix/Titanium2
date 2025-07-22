@@ -536,7 +536,7 @@ async function sendAlert1h2h(symbol, data) {
   const entryLow = format(price - 0.3 * atr);
   const entryHigh = format(price + 0.5 * atr);
   const isBuySignal = state.wprTriggerState[symbol]['1h_2h'].buyTriggered && 
-                      (lsr.value === null || lsr.value < 1.7) && 
+                      (lsr.value === null || lsr.value < 1.9) && 
                       atrPercent >= config.ATR_PERCENT_MIN && 
                       atrPercent <= config.ATR_PERCENT_MAX && 
                       aggressiveDelta.isSignificant && 
@@ -609,7 +609,7 @@ async function sendAlert1h2h(symbol, data) {
     `☑︎Gerencie seu Risco 🤖 @J4Rviz\n`;
   if (isBuySignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Reversão -✳️Compra✳️*\n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Reversão WPR -✳️Compra✳️*\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -621,7 +621,7 @@ async function sendAlert1h2h(symbol, data) {
     }
   } else if (isSellSignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Venda -🔻Correção/Exaustão🔻*\n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Venda WPR -🔻Correção/Exaustão🔻*\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -879,7 +879,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando scalp');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPR+++💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium ROMPWPR 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_3M_MS);
   } catch (e) {
