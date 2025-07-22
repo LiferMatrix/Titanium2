@@ -18,7 +18,7 @@ const config = {
   STOCHASTIC_PERIOD_D: 3,
   STOCHASTIC_BUY_MAX: 70, // Limite máximo para compra (4h e Diário)
   STOCHASTIC_SELL_MIN: 80, // Limite mínimo para venda (4h e Diário)
-  LSR_BUY_MAX: 1.4, // Limite máximo de LSR para compra
+  LSR_BUY_MAX: 1.5, // Limite máximo de LSR para compra
   LSR_SELL_MIN: 2.9, // Limite mínimo de LSR para venda
   DELTA_BUY_MIN: 10, // Limite mínimo de Delta Agressivo para compra (%)
   DELTA_SELL_MAX: -10, // Limite máximo de Delta Agressivo para venda (%)
@@ -26,6 +26,8 @@ const config = {
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
   VOLATILITY_MIN: 0.009, // Volatilidade mínima (ATR/preço ≥ 0.5%)
+  ADX_PERIOD: 14, // Período para cálculo do ADX
+  ADX_MIN: 25 // Valor mínimo do ADX para confirmar tendência forte
 };
 
 // Logger
@@ -181,6 +183,17 @@ function calculateEMA(data, period) {
     values: data.map(d => d.close || d[4])
   });
   return ema.filter(v => !isNaN(v));
+}
+
+function calculateADX(data) {
+  if (!data || data.length < config.ADX_PERIOD + 1) return [];
+  const adx = TechnicalIndicators.ADX.calculate({
+    period: config.ADX_PERIOD,
+    high: data.map(c => c.high || c[2]),
+    low: data.map(c => c.low || c[3]),
+    close: data.map(c => c.close || c[4])
+  });
+  return adx.filter(v => !isNaN(v.adx)).map(v => v.adx);
 }
 
 function calculateVolatility(data, price) {
@@ -442,7 +455,7 @@ function getSetaDirecao(current, previous) {
 }
 
 async function sendAlertStochasticCross(symbol, data) {
-  const { ohlcv15m, ohlcv4h, ohlcv1h, ohlcvDiario, ohlcv3m, price, rsi1h, lsr, fundingRate, aggressiveDelta, estocastico4h, estocasticoD, oi5m, oi15m, atr, ema34_3m, ema89_3m } = data;
+  const { ohlcv15m, ohlcv4h, ohlcv1h, ohlcvDiario, ohlcv3m, price, rsi1h, lsr, fundingRate, aggressiveDelta, estocastico4h, estocasticoD, oi5m, oi15m, atr, ema34_3m, ema89_3m, adx } = data;
   const agora = Date.now();
   if (!state.ultimoAlertaPorAtivo[symbol]) state.ultimoAlertaPorAtivo[symbol] = { historico: [] };
   if (state.ultimoAlertaPorAtivo[symbol]['4h'] && agora - state.ultimoAlertaPorAtivo[symbol]['4h'] < config.TEMPO_COOLDOWN_MS) return;
@@ -505,10 +518,8 @@ async function sendAlertStochasticCross(symbol, data) {
   const stochDEmoji = estocasticoD ? getStochasticEmoji(estocasticoD.k) : "";
   const stoch4hEmoji = estocastico4h ? getStochasticEmoji(estocastico4h.k) : "";
 
-  
   const vpBuyZonesText = volumeProfile.buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = volumeProfile.sellLiquidityZones.map(format).join(' / ') || 'N/A';
-  
 
   const entryLow = format(price - 0.3 * atr);
   const entryHigh = format(price + 0.5 * atr);
@@ -518,7 +529,7 @@ async function sendAlertStochasticCross(symbol, data) {
   const stopSell = format(price + 3.5 * atr);
 
   let alertText = '';
-  // Condições para compra: %K > %D (4h), %K <= 75 (4h e Diário), RSI 1h < 60, OI 5m e 15m subindo, LSR < 2.7, Delta >= 10%, EMA 34 > EMA 89 (3m), Volatilidade >= 0.5%, Volume Anormal
+  // Condições para compra: %K > %D (4h), %K <= 75 (4h e Diário), RSI 1h < 60, OI 5m e 15m subindo, LSR < 2.7, Delta >= 10%, EMA 34 > EMA 89 (3m), Volatilidade >= 0.5%, Volume Anormal, ADX >= 25
   const isBuySignal = estocastico4h && estocasticoD &&
                       estocastico4h.k > estocastico4h.d && 
                       estocastico4h.k <= config.STOCHASTIC_BUY_MAX && 
@@ -530,9 +541,10 @@ async function sendAlertStochasticCross(symbol, data) {
                       aggressiveDelta.deltaPercent >= config.DELTA_BUY_MIN &&
                       ema34_3m > ema89_3m &&
                       volatility >= config.VOLATILITY_MIN &&
-                      isAbnormalVolume;
-  
-  // Condições para venda: %K < %D (4h), %K >= 20 (4h e Diário), RSI 1h > 60, OI 5m e 15m caindo, LSR > 2.7, Delta <= -10%, EMA 34 < EMA 89 (3m), Volatilidade >= 0.5%, Volume Anormal
+                      isAbnormalVolume &&
+                      adx >= config.ADX_MIN;
+
+  // Condições para venda: %K < %D (4h), %K >= 20 (4h e Diário), RSI 1h > 60, OI 5m e 15m caindo, LSR > 2.7, Delta <= -10%, EMA 34 < EMA 89 (3m), Volatilidade >= 0.5%, Volume Anormal, ADX >= 25
   const isSellSignal = estocastico4h && estocasticoD &&
                        estocastico4h.k < estocastico4h.d && 
                        estocastico4h.k >= config.STOCHASTIC_SELL_MIN && 
@@ -544,7 +556,8 @@ async function sendAlertStochasticCross(symbol, data) {
                        aggressiveDelta.deltaPercent <= config.DELTA_SELL_MAX &&
                        ema34_3m < ema89_3m &&
                        volatility >= config.VOLATILITY_MIN &&
-                       isAbnormalVolume;
+                       isAbnormalVolume &&
+                       adx >= config.ADX_MIN;
 
   if (isBuySignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
@@ -574,7 +587,7 @@ async function sendAlertStochasticCross(symbol, data) {
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'buy', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearBuyZone=${isNearBuyZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}, Volatility=${volatility.toFixed(4)}, AbnormalVolume=${isAbnormalVolume}`);
+      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearBuyZone=${isNearBuyZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}, Volatility=${volatility.toFixed(4)}, AbnormalVolume=${isAbnormalVolume}, ADX=${adx.toFixed(2)}`);
     }
   } else if (isSellSignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
@@ -604,7 +617,7 @@ async function sendAlertStochasticCross(symbol, data) {
       state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'sell', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearSellZone=${isNearSellZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}, Volatility=${volatility.toFixed(4)}, AbnormalVolume=${isAbnormalVolume}`);
+      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, Stoch 4h K=${estocastico4h.k}, D=${estocastico4h.d}, Stoch Diário K=${estocasticoD.k}, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearSellZone=${isNearSellZone}, EMA34_3m=${ema34_3m}, EMA89_3m=${ema89_3m}, Volatility=${volatility.toFixed(4)}, AbnormalVolume=${isAbnormalVolume}, ADX=${adx.toFixed(2)}`);
     }
   }
 
@@ -665,9 +678,9 @@ async function checkConditions() {
       const atrValues = calculateATR(ohlcv15m);
       const ema34_3mValues = calculateEMA(ohlcv3m, 34);
       const ema89_3mValues = calculateEMA(ohlcv3m, 89);
-      const zonas = detectarQuebraEstrutura(ohlcv15m);
+      const adxValues = calculateADX(ohlcv15m);
 
-      if (!rsi1hValues.length || !estocastico4h || !estocasticoD || !atrValues.length || !ema34_3mValues.length || !ema89_3mValues.length) {
+      if (!rsi1hValues.length || !estocastico4h || !estocasticoD || !atrValues.length || !ema34_3mValues.length || !ema89_3mValues.length || !adxValues.length) {
         logger.warn(`Indicadores insuficientes para ${symbol}, pulando...`);
         return;
       }
@@ -689,7 +702,8 @@ async function checkConditions() {
         oi15m,
         atr: atrValues[atrValues.length - 1],
         ema34_3m: ema34_3mValues[ema34_3mValues.length - 1],
-        ema89_3m: ema89_3mValues[ema89_3mValues.length - 1]
+        ema89_3m: ema89_3mValues[ema89_3mValues.length - 1],
+        adx: adxValues[adxValues.length - 1]
       });
     }, 5);
   } catch (e) {
@@ -700,7 +714,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.24 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖  Titanium Stoch 6.25 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
   } catch (e) {
