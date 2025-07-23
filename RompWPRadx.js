@@ -724,8 +724,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
   const stoch4hEmoji = estocastico4h ? getStochasticEmoji(estocastico4h.k) : "";
   const vpBuyZonesText = calculateVolumeProfile(ohlcv15m).buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = calculateVolumeProfile(ohlcv15m).sellLiquidityZones.map(format).join(' / ') || 'N/A';
- 
-  }
+
   if (isValidPreviousCandle && 
       zonas.estruturaAlta > 0 && 
       previousClose < zonas.estruturaAlta && 
@@ -812,6 +811,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       logger.info(`Rompimento de baixa detectado para ${symbol}: Preço=${format(price)}, Estrutura Baixa=${format(zonas.estruturaBaixa)}, Tendência=Caindo, Preço Anterior=${format(previousClose)}, LSR=${lsr.value ? lsr.value.toFixed(2) : 'Spot'}, Delta=${aggressiveDelta.deltaPercent}%, OI 15m=${oi15m.percentChange}%, RSI 1h=${rsi1h.toFixed(2)}, ADX 15m=${adx15m.toFixed(2)}`);
     }
   }
+
   if (alertText) {
     try {
       await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, alertText, {
@@ -823,6 +823,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       logger.error(`Erro ao enviar alerta para ${symbol}: ${e.message}`);
     }
   }
+} // Fechamento correto da função
 
 
 async function checkConditions() {
