@@ -12,21 +12,20 @@ const config = {
   PARES_MONITORADOS: (process.env.COINS || "BTCUSDT,ETHUSDT,BNBUSDT").split(","),
   INTERVALO_ALERTA_3M_MS: 180000,
   TEMPO_COOLDOWN_MS: 15 * 60 * 1000,
-  WPR_PERIOD: 14, // Reduzido de 26 para 14
+  WPR_PERIOD: 26, 
   WPR_LOW_THRESHOLD: -97,
   WPR_HIGH_THRESHOLD: -3,
   ATR_PERIOD: 14,
-  RSI_PERIOD: 10, // Reduzido de 14 para 10
-  FI_PERIOD: 13,
+  RSI_PERIOD: 14, 
   ATR_PERCENT_MIN: 0.5,
   ATR_PERCENT_MAX: 3.0,
   CACHE_TTL: 10 * 60 * 1000,
   EMA_13_PERIOD: 13,
-  EMA_34_PERIOD: 20, // Reduzido de 34 para 20
+  EMA_34_PERIOD: 34, 
   EMA_89_PERIOD: 89,
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
-  ADX_PERIOD: 10, // Reduzido de 14 para 10
+  ADX_PERIOD: 10, 
   ADX_MIN: 25
 };
 
@@ -186,32 +185,8 @@ function calculateRSI(data) {
   return filteredRsi;
 }
 
-function calculateOBV(data) {
-  if (!data || data.length < 2) return [];
-  let obv = 0;
-  const obvValues = [data[0].volume];
-  for (let i = 1; i < data.length; i++) {
-    const curr = data[i];
-    const prev = data[i - 1];
-    if (isNaN(curr.close) || isNaN(prev.close) || isNaN(curr.volume)) continue;
-    if (curr.close > prev.close) obv += curr.volume;
-    else if (curr.close < prev.close) obv -= curr.volume;
-    obvValues.push(obv);
-  }
-  return obvValues;
-}
 
-function calculateCVD(data) {
-  if (!data || data.length < 2) return 0;
-  let cvd = 0;
-  for (let i = 1; i < data.length; i++) {
-    const curr = data[i];
-    if (isNaN(curr.close) || isNaN(curr.open) || isNaN(curr.volume)) continue;
-    if (curr.close > curr.open) cvd += curr.volume;
-    else if (curr.close < curr.open) cvd -= curr.volume;
-  }
-  return cvd;
-}
+
 
 function calculateATR(data) {
   if (!data || data.length < config.ATR_PERIOD + 1) {
@@ -229,22 +204,8 @@ function calculateATR(data) {
   return filteredAtr;
 }
 
-function calculateForceIndex(data, period = config.FI_PERIOD) {
-  if (!data || data.length < 2) return [];
-  const fiValues = [];
-  for (let i = 1; i < data.length; i++) {
-    const closeCurrent = data[i].close;
-    const closePrevious = data[i - 1].close;
-    const volume = data[i].volume;
-    if (isNaN(closeCurrent) || isNaN(closePrevious) || isNaN(volume)) continue;
-    const fi = (closeCurrent - closePrevious) * volume;
-    fiValues.push(fi);
-  }
-  if (fiValues.length < period) return [];
-  const emaFi = TechnicalIndicators.EMA.calculate({ period, values: fiValues }).filter(v => !isNaN(v));
-  logger.info(`Force Index calculado: tamanho=${emaFi.length}`);
-  return emaFi;
-}
+
+
 
 function calculateStochastic(data, periodK = 5, smoothK = 3, periodD = 3) {
   if (!data || data.length < periodK + smoothK + periodD - 2) {
@@ -626,12 +587,10 @@ async function sendAlert1h2h(symbol, data) {
     ? [2, 4, 6, 8].map(mult => format(price - mult * atr)).join(" / ")
     : [2, 4, 6, 8].map(mult => format(price + mult * atr)).join(" / ");
   const stop = isSellSignal ? format(price + 5.0 * atr) : format(price - 5.0 * atr);
-  const buyZonesText = zonas.buyLiquidityZones.map(format).join(' / ') || 'N/A';
-  const sellZonesText = zonas.sellLiquidityZones.map(format).join(' / ') || 'N/A';
+  
   const vpBuyZonesText = volumeProfile.buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = volumeProfile.sellLiquidityZones.map(format).join(' / ') || 'N/A';
-  const obBuyZonesText = orderBookLiquidity.buyLiquidityZones.map(format).join(' / ') || 'N/A';
-  const obSellZonesText = orderBookLiquidity.sellLiquidityZones.map(format).join(' / ') || 'N/A';
+  
   let lsrSymbol = '🔘Consol.';
   if (lsr.value !== null) {
     if (lsr.value <= 1.4) lsrSymbol = '✅Baixo';
@@ -763,14 +722,9 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
   const direcao4h = getSetaDirecao(estocastico4h?.k, kAnterior4h);
   const stochDEmoji = estocasticoD ? getStochasticEmoji(estocasticoD.k) : "";
   const stoch4hEmoji = estocastico4h ? getStochasticEmoji(estocastico4h.k) : "";
-  const buyZonesText = zonas.buyLiquidityZones.map(format).join(' / ') || 'N/A';
-  const sellZonesText = zonas.sellLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpBuyZonesText = calculateVolumeProfile(ohlcv15m).buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = calculateVolumeProfile(ohlcv15m).sellLiquidityZones.map(format).join(' / ') || 'N/A';
-  let wprResetText = '🔹 Liquidação: 🔘Nenhuma Recente';
-  if (state.ultimoWPRReset[symbol] && (agora - state.ultimoWPRReset[symbol].timestamp) < config.TEMPO_COOLDOWN_MS) {
-    const reset = state.ultimoWPRReset[symbol];
-    wprResetText = `🔹 Liquidação: ${reset.type === 'alta' ? 'Fluxo de Alta💹' : 'Fluxo de Baixa🚨'}`;
+ 
   }
   if (isValidPreviousCandle && 
       zonas.estruturaAlta > 0 && 
@@ -794,7 +748,6 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       alertText = `🟢 *Rompimento de 🚀Alta🚀*\n\n` +
                   `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço Atual: ${format(price)}\n` +
-                  `${wprResetText}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
                   `🔹 Fund. R: ${fundingRateText}\n` +
@@ -837,7 +790,6 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       alertText = `🔴 *Rompimento de 🔻Baixa🔻*\n\n` +
                   `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço Atual: ${format(price)}\n` +
-                  `${wprResetText}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
                   `🔹 Fund. R: ${fundingRateText}\n` +
@@ -871,7 +823,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       logger.error(`Erro ao enviar alerta para ${symbol}: ${e.message}`);
     }
   }
-}
+
 
 async function checkConditions() {
   try {
@@ -983,7 +935,7 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando scalp');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPRROMPadx 💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPRROMPadx2 💹Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_3M_MS);
   } catch (e) {
