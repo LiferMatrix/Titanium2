@@ -734,7 +734,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       aggressiveDelta.isBuyPressure && 
       estocasticoD?.k < 73 && 
       estocastico4h?.k < 73 &&
-      rsi1h < 52 &&
+      rsi1h < 55 &&
       oi15m.isRising &&
       adx15m >= config.ADX_MIN) {
     const nivelRompido = zonas.estruturaAlta;
@@ -776,7 +776,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
              (lsr.value === null || lsr.value > 2.5) && 
              !aggressiveDelta.isBuyPressure && 
              estocastico4h?.k > 73 && 
-             rsi1h > 50 &&
+             rsi1h > 55 &&
              !oi15m.isRising &&
              adx15m >= config.ADX_MIN) {
     const nivelRompido = zonas.estruturaBaixa;
