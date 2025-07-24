@@ -25,7 +25,7 @@ const config = {
   EMA_89_PERIOD: 89,
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
-  ADX_PERIOD: 12, 
+  ADX_PERIOD: 10, 
   ADX_MIN: 25
 };
 
