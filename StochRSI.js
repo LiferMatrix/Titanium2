@@ -23,7 +23,7 @@ const config = {
   STOCHASTIC_PERIOD_K: 5,
   STOCHASTIC_SMOOTH_K: 3,
   STOCHASTIC_PERIOD_D: 3,
-  RSI_OVERSOLD_THRESHOLD: 55,
+  RSI_OVERSOLD_THRESHOLD: 53,
   RSI_OVERBOUGHT_THRESHOLD: 65,
   STOCHASTIC_BUY_MAX: 70,
   STOCHASTIC_SELL_MIN: 80,
@@ -640,7 +640,7 @@ async function sendMonitorAlert(coins) {
   const formatPrice = (price) => price < 1 ? price.toFixed(8) : price < 10 ? price.toFixed(6) : price < 100 ? price.toFixed(4) : price.toFixed(2);
 
   const topLowRsiWithBullishEMA = coins
-    .filter(c => c.rsi !== null && c.rsi < config.RSI_OVERSOLD_THRESHOLD && c.emaCrossover.isBullishCrossover && c.lsr !== null && c.lsr < 2.5)
+    .filter(c => c.rsi !== null && c.rsi < config.RSI_OVERSOLD_THRESHOLD && c.emaCrossover.isBullishCrossover && c.lsr !== null && c.lsr < 1.7)
     .sort((a, b) => a.rsi - b.rsi)
     .slice(0, config.MAX_COINS_PER_ALERT);
 
