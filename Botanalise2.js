@@ -183,7 +183,7 @@ function calculateStochastic(data, periodK = 5, smoothK = 3, periodD = 3) {
     low: lows,
     close: closes,
     period: periodK,
-    signalPeriod: periodD,
+agedy: 3,
     smoothing: smoothK
   });
 
@@ -393,14 +393,31 @@ function analyzeElliott(ohlcv4h) {
   return { status: waveStatus, analysis: waveAnalysis };
 }
 
-function determineTargets(fibLevels, zonas, rsi1hVal, rsi15mVal, cvd15mStatus, obv15mStatus, estocasticoD, estocastico4h, wyckoff, elliott, orderBook, lsrData) {
-  if (!fibLevels) return { buyTargets: [], sellTargets: [], buyExplanations: [], sellExplanations: [] };
+function determineTargets(fibLevels, zonas, rsi1hVal, rsi15mVal, cvd15mStatus, obv15mStatus, estocasticoD, estocastico4h, wyckoff, elliott, orderBook, lsrData, currentPrice) {
+  if (!fibLevels) return { 
+    buyTargets: [], 
+    sellTargets: [], 
+    buyExplanations: [], 
+    sellExplanations: [], 
+    bestBuyZone: null, 
+    bestSellZone: null, 
+    breakoutAbove: [], 
+    breakoutBelow: [] 
+  };
 
-  const price = fibLevels['50.0'];
+  const price = currentPrice || fibLevels['50.0'];
   const buyTargets = [];
   const sellTargets = [];
   const buyExplanations = [];
   const sellExplanations = [];
+  let bestBuyZone = null;
+  let bestSellZone = null;
+  let bestBuyScore = -1;
+  let bestSellScore = -1;
+  let bestBuyExplanation = '';
+  let bestSellExplanation = '';
+  const breakoutAbove = [];
+  const breakoutBelow = [];
 
   const potentialBuyLevels = [
     { level: fibLevels['23.6'], label: '23.6%' },
@@ -414,109 +431,217 @@ function determineTargets(fibLevels, zonas, rsi1hVal, rsi15mVal, cvd15mStatus, o
     { level: fibLevels['100.0'], label: '100.0%' }
   ].filter(l => l.level > price && l.level > 0);
 
+  // Avaliar alvos de compra
   potentialBuyLevels.forEach(({ level, label }) => {
     let relevance = "";
-    let isRelevant = false;
+    let score = 0;
 
     const nearBuyZone = zonas.buyLiquidityZones.some(z => Math.abs(z - level) / level < 0.01);
     if (nearBuyZone) {
       relevance += "🟢 Coincide com zona de liquidez de compra. ";
-      isRelevant = true;
+      score += 2;
     }
 
     if (rsi15mVal < 40 || rsi1hVal < 40) {
       relevance += "📉 RSI em zona de sobrevenda. ";
-      isRelevant = true;
+      score += 1.5;
     }
 
     if (cvd15mStatus === "⬆️ Bullish" || obv15mStatus === "⬆️ Bullish") {
       relevance += "📈 CVD/OBV bullish. ";
-      isRelevant = true;
+      score += 1;
     }
 
     if ((estocasticoD?.k < 25 && estocasticoD?.k > estocasticoD?.d) || (estocastico4h?.k < 25 && estocastico4h?.k > estocastico4h?.d)) {
       relevance += "📊 Estocástico em sobrevenda. ";
-      isRelevant = true;
+      score += 1.5;
     }
 
     if (wyckoff.phase.includes("Acumulação")) {
       relevance += "📚 Fase de acumulação (Wyckoff). ";
-      isRelevant = true;
+      score += 1;
     }
 
     if (elliott.status.includes("Onda Corretiva")) {
       relevance += "🌊 Onda corretiva (Elliott). ";
-      isRelevant = true;
+      score += 1;
     }
 
     if (orderBook.totalBidVolume > orderBook.totalAskVolume * 1.2) {
       relevance += "📖 Maior volume de bids. ";
-      isRelevant = true;
+      score += 1;
     }
 
     if (lsrData.account.value > 1.2 || lsrData.position.value > 1.2) {
-      relevance += "📉 LSR bullish. ";
-      isRelevant = true;
+      relevance += `📉 LSR bullish (Conta: ${lsrData.account.value?.toFixed(2) || '--'}, Posição: ${lsrData.position.value?.toFixed(2) || '--'}). `;
+      score += 1;
     }
 
-    if (isRelevant) {
+    if (score > 0) {
       buyTargets.push(level);
       buyExplanations.push(`*${label} (${level.toFixed(4)})*: ${relevance}`);
+      if (score > bestBuyScore) {
+        bestBuyScore = score;
+        bestBuyZone = { level, label };
+        bestBuyExplanation = relevance;
+      }
     }
   });
 
+  // Avaliar alvos de venda
   potentialSellLevels.forEach(({ level, label }) => {
     let relevance = "";
-    let isRelevant = false;
+    let score = 0;
 
     const nearSellZone = zonas.sellLiquidityZones.some(z => Math.abs(z - level) / level < 0.01);
     if (nearSellZone) {
       relevance += "🔴 Coincide com zona de liquidez de venda. ";
-      isRelevant = true;
+      score += 2;
     }
 
     if (rsi15mVal > 60 || rsi1hVal > 60) {
       relevance += "📉 RSI em zona de sobrecompra. ";
-      isRelevant = true;
+      score += 1.5;
     }
 
     if (cvd15mStatus === "⬇️ Bearish" || obv15mStatus === "⬇️ Bearish") {
       relevance += "📈 CVD/OBV bearish. ";
-      isRelevant = true;
+      score += 1;
     }
 
     if ((estocasticoD?.k > 75 && estocasticoD?.k < estocasticoD?.d) || (estocastico4h?.k > 75 && estocastico4h?.k < estocastico4h?.d)) {
       relevance += "📊 Estocástico em sobrecompra. ";
-      isRelevant = true;
+      score += 1.5;
     }
 
     if (wyckoff.phase.includes("Distribuição")) {
       relevance += "📚 Fase de distribuição (Wyckoff). ";
-      isRelevant = true;
+      score += 1;
     }
 
     if (elliott.status.includes("Onda Impulsiva")) {
       relevance += "🌊 Onda impulsiva (Elliott). ";
-      isRelevant = true;
+      score += 1;
     }
 
     if (orderBook.totalAskVolume > orderBook.totalBidVolume * 1.2) {
       relevance += "📖 Maior volume de asks. ";
-      isRelevant = true;
+      score += 1;
     }
 
     if (lsrData.account.value < 0.8 || lsrData.position.value < 0.8) {
-      relevance += "📉 LSR bearish. ";
-      isRelevant = true;
+      relevance += `📉 LSR bearish (Conta: ${lsrData.account.value?.toFixed(2) || '--'}, Posição: ${lsrData.position.value?.toFixed(2) || '--'}). `;
+      score += 1;
     }
 
-    if (isRelevant) {
+    if (score > 0) {
       sellTargets.push(level);
       sellExplanations.push(`*${label} (${level.toFixed(4)})*: ${relevance}`);
+      if (score > bestSellScore) {
+        bestSellScore = score;
+        bestSellZone = { level, label };
+        bestSellExplanation = relevance;
+      }
     }
   });
 
-  return { buyTargets, sellTargets, buyExplanations, sellExplanations };
+  // Avaliar pontos de rompimento de estrutura
+  if (zonas.estruturaAlta > 0 && zonas.estruturaAlta > price) {
+    let relevance = "🔝 Resistência principal. ";
+    let score = 1;
+
+    const nearSellZone = zonas.sellLiquidityZones.some(z => Math.abs(z - zonas.estruturaAlta) / zonas.estruturaAlta < 0.01);
+    if (nearSellZone) {
+      relevance += "🔴 Coincide com zona de liquidez de venda. ";
+      score += 2;
+    }
+
+    if (fibLevels['61.8'] && Math.abs(zonas.estruturaAlta - fibLevels['61.8']) / zonas.estruturaAlta < 0.01) {
+      relevance += "📏 Perto de Fibonacci 61.8%. ";
+      score += 1;
+    } else if (fibLevels['78.6'] && Math.abs(zonas.estruturaAlta - fibLevels['78.6']) / zonas.estruturaAlta < 0.01) {
+      relevance += "📏 Perto de Fibonacci 78.6%. ";
+      score += 1;
+    } else if (fibLevels['100.0'] && Math.abs(zonas.estruturaAlta - fibLevels['100.0']) / zonas.estruturaAlta < 0.01) {
+      relevance += "📏 Perto de Fibonacci 100.0%. ";
+      score += 1;
+    }
+
+    if (lsrData.account.value < 0.8 || lsrData.position.value < 0.8) {
+      relevance += `📉 LSR bearish (Conta: ${lsrData.account.value?.toFixed(2) || '--'}, Posição: ${lsrData.position.value?.toFixed(2) || '--'}). `;
+      score += 1;
+    }
+
+    breakoutAbove.push({ level: zonas.estruturaAlta, label: 'Estrutura Alta', explanation: relevance });
+
+    // Adicionar alvos futuros acima
+    const futureAboveLevels = [
+      { level: fibLevels['78.6'], label: 'Fib 78.6%' },
+      { level: fibLevels['100.0'], label: 'Fib 100.0%' }
+    ].filter(l => l.level > zonas.estruturaAlta && l.level > 0);
+
+    futureAboveLevels.forEach(({ level, label }) => {
+      let futureRelevance = "🎯 Alvo futuro após rompimento de alta. ";
+      if (zonas.sellLiquidityZones.some(z => Math.abs(z - level) / level < 0.01)) {
+        futureRelevance += "🔴 Coincide com zona de liquidez de venda. ";
+      }
+      breakoutAbove.push({ level, label, explanation: futureRelevance });
+    });
+  }
+
+  if (zonas.estruturaBaixa > 0 && zonas.estruturaBaixa < price) {
+    let relevance = "🔍 Suporte principal. ";
+    let score = 1;
+
+    const nearBuyZone = zonas.buyLiquidityZones.some(z => Math.abs(z - zonas.estruturaBaixa) / zonas.estruturaBaixa < 0.01);
+    if (nearBuyZone) {
+      relevance += "🟢 Coincide com zona de liquidez de compra. ";
+      score += 2;
+    }
+
+    if (fibLevels['38.2'] && Math.abs(zonas.estruturaBaixa - fibLevels['38.2']) / zonas.estruturaBaixa < 0.01) {
+      relevance += "📏 Perto de Fibonacci 38.2%. ";
+      score += 1;
+    } else if (fibLevels['23.6'] && Math.abs(zonas.estruturaBaixa - fibLevels['23.6']) / zonas.estruturaBaixa < 0.01) {
+      relevance += "📏 Perto de Fibonacci 23.6%. ";
+      score += 1;
+    } else if (fibLevels['0.0'] && Math.abs(zonas.estruturaBaixa - fibLevels['0.0']) / zonas.estruturaBaixa < 0.01) {
+      relevance += "📏 Perto de Fibonacci 0.0%. ";
+      score += 1;
+    }
+
+    if (lsrData.account.value > 1.2 || lsrData.position.value > 1.2) {
+      relevance += `📉 LSR bullish (Conta: ${lsrData.account.value?.toFixed(2) || '--'}, Posição: ${lsrData.position.value?.toFixed(2) || '--'}). `;
+      score += 1;
+    }
+
+    breakoutBelow.push({ level: zonas.estruturaBaixa, label: 'Estrutura Baixa', explanation: relevance });
+
+    // Adicionar alvos futuros abaixo
+    const futureBelowLevels = [
+      { level: fibLevels['23.6'], label: 'Fib 23.6%' },
+      { level: fibLevels['0.0'], label: 'Fib 0.0%' }
+    ].filter(l => l.level < zonas.estruturaBaixa && l.level > 0);
+
+    futureBelowLevels.forEach(({ level, label }) => {
+      let futureRelevance = "🎯 Alvo futuro após rompimento de baixa. ";
+      if (zonas.buyLiquidityZones.some(z => Math.abs(z - level) / level < 0.01)) {
+        futureRelevance += "🟢 Coincide com zona de liquidez de compra. ";
+      }
+      breakoutBelow.push({ level, label, explanation: futureRelevance });
+    });
+  }
+
+  return {
+    buyTargets,
+    sellTargets,
+    buyExplanations,
+    sellExplanations,
+    bestBuyZone: bestBuyZone ? { level: bestBuyZone.level.toFixed(4), label: bestBuyZone.label, explanation: bestBuyExplanation } : null,
+    bestSellZone: bestSellZone ? { level: bestSellZone.level.toFixed(4), label: bestSellZone.label, explanation: bestSellExplanation } : null,
+    breakoutAbove,
+    breakoutBelow
+  };
 }
 
 // Função para validar o par de moedas
@@ -592,7 +717,21 @@ async function sendStatusReport(symbol, chatId) {
     const fibLevels = calculateFibonacciLevels(ohlcvDiario);
 
     // Alvos
-    const targets = determineTargets(fibLevels, zonas, rsi1hVal, rsi15mVal, calculateCVD(ohlcv15m) > 0 ? "⬆️ Bullish" : "⬇️ Bearish", calculateOBV(ohlcv15m) > 0 ? "⬆️ Bullish" : "⬇️ Bearish", estocasticoD, estocastico4h, analyzeWyckoff(ohlcvDiario, ohlcv4h, ohlcvDiario[ohlcvDiario.length - 1][5], ohlcvDiario[ohlcvDiario.length - 2][5]), analyzeElliott(ohlcv4h), await fetchOrderBook(symbol), lsrData);
+    const targets = determineTargets(
+      fibLevels, 
+      zonas, 
+      rsi1hVal, 
+      rsi15mVal, 
+      calculateCVD(ohlcv15m) > 0 ? "⬆️ Bullish" : "⬇️ Bearish", 
+      calculateOBV(ohlcv15m) > 0 ? "⬆️ Bullish" : "⬇️ Bearish", 
+      estocasticoD, 
+      estocastico4h, 
+      analyzeWyckoff(ohlcvDiario, ohlcv4h, ohlcvDiario[ohlcvDiario.length - 1][5], ohlcvDiario[ohlcvDiario.length - 2][5]), 
+      analyzeElliott(ohlcv4h), 
+      await fetchOrderBook(symbol), 
+      lsrData,
+      price
+    );
 
     // Montar relatório conciso
     texto += `*${symbol}*\n` +
@@ -605,14 +744,24 @@ async function sendStatusReport(symbol, chatId) {
       `📊 *Stoch D %K*: ${estocasticoD ? estocasticoD.k.toFixed(1) : '--'}${kDEmoji}\n` +
       `📊 *Stoch 4H %K*: ${estocastico4h ? estocastico4h.k.toFixed(1) : '--'}${k4hEmoji}\n` +
       `📉 *LSR Contas*: ${lsrData.account.value?.toFixed(2) || '--'} ${lsrData.account.status}\n` +
+      `📉 *LSR Posições*: ${lsrData.position.value?.toFixed(2) || '--'} ${lsrData.position.status}\n` +
       `📈 *OI 15m*: ${oi15m.value?.toFixed(2) || '--'} ${oi15m.status}\n` +
       `📊 *Funding Rate*: ${fundingRate}%\n` +
       `🔹 *Suporte*: ${format(zonas.estruturaBaixa) || '--'}\n` +
       `🔹 *Resistência*: ${format(zonas.estruturaAlta) || '--'}\n` +
-      `\n🎯 *Alvos de Compra*\n` +
-      (targets.buyExplanations.length > 0 ? targets.buyExplanations.map(e => e.split(': ')[0] + ': ' + e.split(': ')[1].split('. ')[0]).join('\n') : 'Nenhum identificado.\n') +
-      `\n🎯 *Alvos de Venda*\n` +
-      (targets.sellExplanations.length > 0 ? targets.sellExplanations.map(e => e.split(': ')[0] + ': ' + e.split(': ')[1].split('. ')[0]).join('\n') : 'Nenhum identificado.\n');
+      `\n🎯 *Melhor Zona de Compra*\n` +
+      (targets.bestBuyZone ? `*${targets.bestBuyZone.label} (${targets.bestBuyZone.level})*: ${targets.bestBuyZone.explanation}` : 'Nenhuma identificada.') +
+      `\n🎯 *Melhor Zona de Venda*\n` +
+      (targets.bestSellZone ? `*${targets.bestSellZone.label} (${targets.bestSellZone.level})*: ${targets.bestSellZone.explanation}` : 'Nenhuma identificada.') +
+      `\n\n🎯 *Possíveis Pontos de Rompimento*\n` +
+      `📈 *Acima*\n` +
+      (targets.breakoutAbove.length > 0 ? targets.breakoutAbove.map(b => `*${b.label} (${format(b.level)})*: ${b.explanation}`).join('\n') : 'Nenhum identificado.') +
+      `\n📉 *Abaixo*\n` +
+      (targets.breakoutBelow.length > 0 ? targets.breakoutBelow.map(b => `*${b.label} (${format(b.level)})*: ${b.explanation}`).join('\n') : 'Nenhum identificado.') +
+      `\n\n🎯 *Alvos de Compra*\n` +
+      (targets.buyExplanations.length > 0 ? targets.buyExplanations.map(e => e.split(': ')[0] + ': ' + e.split(': ')[1]).join('\n') : 'Nenhum identificado.') +
+      `\n\n🎯 *Alvos de Venda*\n` +
+      (targets.sellExplanations.length > 0 ? targets.sellExplanations.map(e => e.split(': ')[0] + ': ' + e.split(': ')[1]).join('\n') : 'Nenhum identificado.');
 
     await bot.api.sendMessage(chatId, texto, {
       parse_mode: 'Markdown',
