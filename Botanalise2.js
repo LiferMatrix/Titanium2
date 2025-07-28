@@ -821,7 +821,7 @@ async function main() {
     });
 
     logger.info('Bot configurado, iniciando...');
-    await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, '🤖 Titanium Radar - Bot de Análise de Criptomoedas Iniciado');
+    await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, '🤖 Titanium Análise  Crypto');
     await bot.start();
   } catch (e) {
     logger.error(`Erro ao iniciar bot: ${e.message}`, { stack: e.stack });
