@@ -52,7 +52,7 @@ const exchangeFutures = new ccxt.binance({
   apiKey: process.env.BINANCE_API_KEY,
   secret: process.env.BINANCE_SECRET_KEY,
   enableRateLimit: true,
-  timeout: 30000,
+  timeout: 60000, // Aumentar para 60 segundos
   options: { defaultType: 'future' }
 });
 
