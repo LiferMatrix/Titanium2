@@ -16,6 +16,8 @@ const config = {
   RSI_LOW_THRESHOLD: 25,
   CACHE_TTL: 10 * 60 * 1000, // 10 minutos
   MAX_CACHE_SIZE: 100,
+  RECONNECT_MAX_ATTEMPTS: 10,
+  RECONNECT_DELAY_BASE_MS: 2000,
 };
 
 // Logger
@@ -32,6 +34,7 @@ const logger = winston.createLogger({
 const state = {
   ultimoAlertaPorAtivo: {},
   dataCache: new Map(),
+  isConnected: false,
 };
 
 // Validação de variáveis de ambiente
@@ -47,8 +50,8 @@ function validateEnv() {
 validateEnv();
 
 // Inicialização do Telegram e Exchange
-const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
-const exchangeSpot = new ccxt.binance({
+let bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+let exchangeSpot = new ccxt.binance({
   apiKey: process.env.BINANCE_API_KEY,
   secret: process.env.BINANCE_SECRET_KEY,
   enableRateLimit: true,
@@ -62,6 +65,10 @@ async function withRetry(fn, retries = 5, delayBase = 1000) {
     try {
       return await fn();
     } catch (e) {
+      if (e.message.includes('network') || e.message.includes('timeout') || e.message.includes('ENOTFOUND') || e.message.includes('ECONNREFUSED')) {
+        logger.warn(`Erro de rede detectado: ${e.message}. Tentando reconectar...`);
+        await reconnect();
+      }
       if (attempt === retries) {
         logger.warn(`Falha após ${retries} tentativas: ${e.message}`);
         throw e;
@@ -70,6 +77,51 @@ async function withRetry(fn, retries = 5, delayBase = 1000) {
       logger.info(`Tentativa ${attempt} falhou, retry após ${delay}ms: ${e.message}`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
+  }
+}
+
+async function reconnect() {
+  let attempts = 0;
+  while (attempts < config.RECONNECT_MAX_ATTEMPTS && !state.isConnected) {
+    attempts++;
+    const delay = Math.pow(2, attempts - 1) * config.RECONNECT_DELAY_BASE_MS;
+    logger.info(`Tentativa de reconexão ${attempts}/${config.RECONNECT_MAX_ATTEMPTS}, aguardando ${delay}ms`);
+
+    try {
+      // Testar conexão com Binance
+      await exchangeSpot.fetchTime();
+      logger.info('Conexão com Binance bem-sucedida');
+
+      // Testar conexão com Telegram
+      await bot.api.getMe();
+      logger.info('Conexão com Telegram bem-sucedida');
+
+      state.isConnected = true;
+      logger.info('Reconexão bem-sucedida');
+      return;
+    } catch (e) {
+      logger.error(`Falha na reconexão (tentativa ${attempts}): ${e.message}`);
+      if (attempts === config.RECONNECT_MAX_ATTEMPTS) {
+        logger.error('Número máximo de tentativas de reconexão atingido. Encerrando processo.');
+        process.exit(1);
+      }
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  // Reinicializar cliente do Telegram e Exchange em caso de falha persistente
+  try {
+    bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+    exchangeSpot = new ccxt.binance({
+      apiKey: process.env.BINANCE_API_KEY,
+      secret: process.env.BINANCE_SECRET_KEY,
+      enableRateLimit: true,
+      timeout: 30000,
+      options: { defaultType: 'spot' }
+    });
+    logger.info('Clientes Binance e Telegram reinicializados');
+  } catch (e) {
+    logger.error(`Erro ao reinicializar clientes: ${e.message}`);
   }
 }
 
@@ -155,7 +207,7 @@ async function sendAlertRSI(symbol, data) {
 
   if (isExhaustionSignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Exaustão - RSI Alto\n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Exaustão - Realizar Lucros/Parcial\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -164,10 +216,11 @@ async function sendAlertRSI(symbol, data) {
       logger.info(`Alerta de exaustão enviado para ${symbol}: RSI 5m=${rsi5m.toFixed(2)}, RSI 15m=${rsi15m.toFixed(2)}, RSI 1h=${rsi1h.toFixed(2)}`);
     } catch (e) {
       logger.error(`Erro ao enviar alerta de exaustão para ${symbol}: ${e.message}`);
+      await reconnect();
     }
   } else if (isOversoldSignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Analisar- RSI Baixo \n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Analisar- RSI Baixo\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -176,12 +229,17 @@ async function sendAlertRSI(symbol, data) {
       logger.info(`Alerta de sobrevenda enviado para ${symbol}: RSI 5m=${rsi5m.toFixed(2)}, RSI 15m=${rsi15m.toFixed(2)}, RSI 1h=${rsi1h.toFixed(2)}`);
     } catch (e) {
       logger.error(`Erro ao enviar alerta de sobrevenda para ${symbol}: ${e.message}`);
+      await reconnect();
     }
   }
 }
 
 async function checkConditions() {
   try {
+    if (!state.isConnected) {
+      logger.warn('Conexão não estabelecida, tentando reconectar antes de verificar condições');
+      await reconnect();
+    }
     await limitConcurrency(config.PARES_MONITORADOS, async (symbol) => {
       const cacheKeyPrefix = `ohlcv_${symbol}`;
       const ohlcv5mRaw = getCachedData(`${cacheKeyPrefix}_5m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '5m', undefined, config.RSI_PERIOD + 1));
@@ -229,17 +287,27 @@ async function checkConditions() {
     }, 5);
   } catch (e) {
     logger.error(`Erro ao processar condições: ${e.message}`);
+    await reconnect();
   }
 }
 
 async function main() {
   logger.info('Iniciando RSI Alert Bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 RSI Alert 💹 Start...'));
+    // Inicializar conexão
+    await withRetry(() => bot.api.getMe());
+    await withRetry(() => exchangeSpot.fetchTime());
+    state.isConnected = true;
+    logger.info('Conexão inicial com Binance e Telegram estabelecida');
+
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 RSI alert 💹 Start...'));
     await checkConditions();
     setInterval(checkConditions, config.INTERVALO_ALERTA_5M_MS);
   } catch (e) {
     logger.error(`Erro ao iniciar bot: ${e.message}`);
+    await reconnect();
+    // Tentar reiniciar o main após reconexão
+    setTimeout(main, config.RECONNECT_DELAY_BASE_MS);
   }
 }
 
