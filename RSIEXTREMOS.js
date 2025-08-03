@@ -2,33 +2,29 @@ require('dotenv').config();
 const ccxt = require('ccxt');
 const TechnicalIndicators = require('technicalindicators');
 const { Bot } = require('grammy');
-const winston = require('winston');
 
 // ================= CONFIGURAÇÃO ================= //
 const config = {
-  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
-  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
-  PARES_MONITORADOS: (process.env.COINS || "BTCUSDT,ETHUSDT,BNBUSDT").split(","),
-  INTERVALO_ALERTA_5M_MS: 300000, // 5 minutos
-  TEMPO_COOLDOWN_MS: 15 * 60 * 1000, // 15 minutos
+  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
+  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
+  PARES_MONITORADOS: (process.env.COINS || "BTCUSDT,ETHUSDT").split(","),
+  INTERVALO_ALERTA_MS: 600000, // 10 minutos
+  TEMPO_COOLDOWN_MS: 10 * 60 * 1000, // 10 minutos
   RSI_PERIOD: 14,
-  RSI_HIGH_THRESHOLD: 75,
-  RSI_LOW_THRESHOLD: 25,
+  RSI_HIGH_THRESHOLD: 70, // Mantido para teste (reverter para 75 se desejar)
+  RSI_LOW_THRESHOLD: 30, // Mantido para teste (reverter para 25 se desejar)
   CACHE_TTL: 10 * 60 * 1000, // 10 minutos
-  MAX_CACHE_SIZE: 100,
-  RECONNECT_MAX_ATTEMPTS: 10,
+  MAX_CACHE_SIZE: 50,
+  RECONNECT_MAX_ATTEMPTS: 5,
   RECONNECT_DELAY_BASE_MS: 2000,
 };
 
-// Logger
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
-  transports: [
-    new winston.transports.File({ filename: 'rsi_alert_bot.log' }),
-    new winston.transports.Console()
-  ]
-});
+// Logger simplificado
+const logger = {
+  info: console.log,
+  warn: console.warn,
+  error: console.error
+};
 
 // Estado global
 const state = {
@@ -39,10 +35,10 @@ const state = {
 
 // Validação de variáveis de ambiente
 function validateEnv() {
-  const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'COINS'];
+  const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'];
   for (const key of required) {
     if (!process.env[key]) {
-      logger.error(`Missing environment variable: ${key}`);
+      logger.error(`Variável de ambiente ausente: ${key}`);
       process.exit(1);
     }
   }
@@ -66,15 +62,15 @@ async function withRetry(fn, retries = 5, delayBase = 1000) {
       return await fn();
     } catch (e) {
       if (e.message.includes('network') || e.message.includes('timeout') || e.message.includes('ENOTFOUND') || e.message.includes('ECONNREFUSED')) {
-        logger.warn(`Erro de rede detectado: ${e.message}. Tentando reconectar...`);
+        logger.warn(`Erro de rede: ${e.message}. Tentando reconectar...`);
         await reconnect();
       }
       if (attempt === retries) {
-        logger.warn(`Falha após ${retries} tentativas: ${e.message}`);
+        logger.error(`Falha após ${retries} tentativas: ${e.message}`);
         throw e;
       }
       const delay = Math.pow(2, attempt - 1) * delayBase;
-      logger.info(`Tentativa ${attempt} falhou, retry após ${delay}ms: ${e.message}`);
+      logger.info(`Tentativa ${attempt} falhou, retry após ${delay}ms`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -85,53 +81,37 @@ async function reconnect() {
   while (attempts < config.RECONNECT_MAX_ATTEMPTS && !state.isConnected) {
     attempts++;
     const delay = Math.pow(2, attempts - 1) * config.RECONNECT_DELAY_BASE_MS;
-    logger.info(`Tentativa de reconexão ${attempts}/${config.RECONNECT_MAX_ATTEMPTS}, aguardando ${delay}ms`);
+    logger.info(`Reconexão ${attempts}/${config.RECONNECT_MAX_ATTEMPTS}, aguardando ${delay}ms`);
 
     try {
-      // Testar conexão com Binance
       await exchangeSpot.fetchTime();
-      logger.info('Conexão com Binance bem-sucedida');
-
-      // Testar conexão com Telegram
       await bot.api.getMe();
-      logger.info('Conexão com Telegram bem-sucedida');
-
       state.isConnected = true;
       logger.info('Reconexão bem-sucedida');
       return;
     } catch (e) {
       logger.error(`Falha na reconexão (tentativa ${attempts}): ${e.message}`);
       if (attempts === config.RECONNECT_MAX_ATTEMPTS) {
-        logger.error('Número máximo de tentativas de reconexão atingido. Encerrando processo.');
+        logger.error('Máximo de tentativas de reconexão atingido. Encerrando.');
         process.exit(1);
       }
       await new Promise(resolve => setTimeout(resolve, delay));
     }
-  }
-
-  // Reinicializar cliente do Telegram e Exchange em caso de falha persistente
-  try {
-    bot = new Bot(config.TELEGRAM_BOT_TOKEN);
-    exchangeSpot = new ccxt.binance({
-      apiKey: process.env.BINANCE_API_KEY,
-      secret: process.env.BINANCE_SECRET_KEY,
-      enableRateLimit: true,
-      timeout: 30000,
-      options: { defaultType: 'spot' }
-    });
-    logger.info('Clientes Binance e Telegram reinicializados');
-  } catch (e) {
-    logger.error(`Erro ao reinicializar clientes: ${e.message}`);
   }
 }
 
 function getCachedData(key) {
   const cacheEntry = state.dataCache.get(key);
   if (cacheEntry && Date.now() - cacheEntry.timestamp < config.CACHE_TTL) {
-    logger.info(`Usando cache para ${key}`);
-    return cacheEntry.data;
+    if (Array.isArray(cacheEntry.data) && cacheEntry.data.every(c => 
+      Array.isArray(c) && c.length === 6 && !isNaN(c[4]) && !isNaN(c[5])
+    )) {
+      logger.info(`Usando cache válido para ${key}`);
+      return cacheEntry.data;
+    }
+    logger.warn(`Dados inválidos no cache para ${key}, limpando...`);
+    state.dataCache.delete(key);
   }
-  state.dataCache.delete(key);
   return null;
 }
 
@@ -139,29 +119,35 @@ function setCachedData(key, data) {
   if (state.dataCache.size >= config.MAX_CACHE_SIZE) {
     const oldestKey = state.dataCache.keys().next().value;
     state.dataCache.delete(oldestKey);
-    logger.info(`Cache cheio, removido item mais antigo: ${oldestKey}`);
+    logger.info(`Cache cheio, removido: ${oldestKey}`);
   }
-  state.dataCache.set(key, { timestamp: Date.now(), data });
-  setTimeout(() => {
-    if (state.dataCache.has(key) && Date.now() - state.dataCache.get(key).timestamp >= config.CACHE_TTL) {
-      state.dataCache.delete(key);
-      logger.info(`Cache limpo para ${key}`);
-    }
-  }, config.CACHE_TTL + 1000);
+  if (Array.isArray(data) && data.length > 0) {
+    state.dataCache.set(key, { timestamp: Date.now(), data });
+    logger.info(`Cache atualizado para ${key}`);
+  } else {
+    logger.warn(`Dados inválidos, não armazenados no cache para ${key}`);
+  }
 }
 
-async function limitConcurrency(items, fn, limit = 5) {
-  const results = [];
-  for (let i = 0; i < items.length; i += limit) {
-    const batch = items.slice(i, i + limit);
-    const batchResults = await Promise.all(batch.map(item => fn(item)));
-    results.push(...batchResults);
-  }
-  return results;
+function clearCacheOnError(symbol) {
+  ['5m', '15m', '1h'].forEach(timeframe => {
+    state.dataCache.delete(`ohlcv_${symbol}_${timeframe}`);
+    logger.info(`Cache limpo para ${symbol}_${timeframe} após erro`);
+  });
+}
+
+// Escapar caracteres especiais para MarkdownV2
+function escapeMarkdownV2(text) {
+  const charsToEscape = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+  return text.replace(new RegExp(`([${charsToEscape.join('\\')}])`, 'g'), '\\$1');
 }
 
 // ================= INDICADORES ================= //
 function normalizeOHLCV(data) {
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    logger.warn('Dados OHLCV inválidos ou vazios');
+    return [];
+  }
   return data.map(c => ({
     time: c[0],
     open: Number(c[1]),
@@ -173,10 +159,13 @@ function normalizeOHLCV(data) {
 }
 
 function calculateRSI(data) {
-  if (!data || data.length < config.RSI_PERIOD + 1) return [];
+  if (!data || data.length < config.RSI_PERIOD + 1) {
+    logger.warn('Dados insuficientes para calcular RSI');
+    return [];
+  }
   const rsi = TechnicalIndicators.RSI.calculate({
     period: config.RSI_PERIOD,
-    values: data.map(d => d.close || d[4])
+    values: data.map(d => d.close)
   });
   return rsi.filter(v => !isNaN(v));
 }
@@ -185,128 +174,139 @@ function calculateRSI(data) {
 async function sendAlertRSI(symbol, data) {
   const { ohlcv5m, ohlcv15m, ohlcv1h, price, rsi5m, rsi15m, rsi1h } = data;
   const agora = Date.now();
-  if (state.ultimoAlertaPorAtivo[symbol]?.['rsi'] && agora - state.ultimoAlertaPorAtivo[symbol]['rsi'] < config.TEMPO_COOLDOWN_MS) return;
+  if (state.ultimoAlertaPorAtivo[symbol]?.['rsi'] && agora - state.ultimoAlertaPorAtivo[symbol]['rsi'] < config.TEMPO_COOLDOWN_MS) {
+    logger.info(`Cooldown ativo para ${symbol}`);
+    return;
+  }
+
+  logger.info(`Verificando RSI para ${symbol}: 5m=${rsi5m.toFixed(2)}, 15m=${rsi15m.toFixed(2)}, 1h=${rsi1h.toFixed(2)}`);
 
   const precision = price < 1 ? 8 : price < 10 ? 6 : price < 100 ? 4 : 2;
-  const format = v => isNaN(v) ? 'N/A' : v.toFixed(precision);
-  const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol.replace('/', '')}&interval=5`;
+  const isHigh = rsi5m > config.RSI_HIGH_THRESHOLD && rsi15m > config.RSI_HIGH_THRESHOLD && rsi1h > config.RSI_HIGH_THRESHOLD;
+  const isLow = rsi5m < config.RSI_LOW_THRESHOLD && rsi15m < config.RSI_LOW_THRESHOLD && rsi1h < config.RSI_LOW_THRESHOLD;
+  const emoji = isHigh ? '💥' : isLow ? '❎' : '';
 
-  const isExhaustionSignal = rsi5m > config.RSI_HIGH_THRESHOLD && 
-                            rsi15m > config.RSI_HIGH_THRESHOLD && 
-                            rsi1h > config.RSI_HIGH_THRESHOLD;
-  const isOversoldSignal = rsi5m < config.RSI_LOW_THRESHOLD && 
-                          rsi15m < config.RSI_LOW_THRESHOLD && 
-                          rsi1h < config.RSI_LOW_THRESHOLD;
+  if (!isHigh && !isLow) {
+    logger.info(`Nenhum alerta disparado para ${symbol}: RSI fora dos limiares (High: ${config.RSI_HIGH_THRESHOLD}, Low: ${config.RSI_LOW_THRESHOLD})`);
+    return;
+  }
 
-  let alertText = `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
-                  `💲 Preço: ${format(price)}\n` +
-                  `🔹 RSI 5m: ${rsi5m.toFixed(2)}\n` +
-                  `🔹 RSI 15m: ${rsi15m.toFixed(2)}\n` +
-                  `🔹 RSI 1h: ${rsi1h.toFixed(2)}\n` +
-                  `☑︎ Monitor 🤖 @J4Rviz\n`;
+  // Formatação ajustada para corresponder ao exemplo fornecido
+  const alertText = `${emoji} ${isHigh ? 'Exaustão - Realizar Lucros/Parcial' : 'Analisar - RSI Baixo'}\n` +
+                    `🔹Ativo: ${escapeMarkdownV2(symbol)}\n` +
+                    `💲 Preço: ${price.toFixed(precision)}\n` +
+                    `🔹 RSI 5m: ${rsi5m.toFixed(2)}\n` +
+                    `🔹 RSI 15m: ${rsi15m.toFixed(2)}\n` +
+                    `🔹 RSI 1h: ${rsi1h.toFixed(2)}\n` +
+                    `${emoji} Monitor @J4Rviz`;
 
-  if (isExhaustionSignal) {
+  try {
+    logger.info(`Enviando alerta para ${symbol} (isHigh: ${isHigh}, isLow: ${isLow}): ${alertText}`);
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, alertText, {
+      parse_mode: 'MarkdownV2'
+    }));
+    state.ultimoAlertaPorAtivo[symbol] = { rsi: agora };
+    logger.info(`Alerta ${isHigh ? 'exaustão' : 'sobrevenda'} enviado para ${symbol}: RSI 5m=${rsi5m.toFixed(2)}, 15m=${rsi15m.toFixed(2)}, 1h=${rsi1h.toFixed(2)}`);
+  } catch (e) {
+    logger.error(`Erro ao enviar alerta MarkdownV2 para ${symbol}: ${e.message}`);
+    // Fallback para texto simples com formatação idêntica
+    const plainText = `${emoji} ${isHigh ? 'Exaustão - Realizar Lucros/Parcial' : 'Analisar - RSI Baixo'}\n` +
+                      `🔹Ativo: ${symbol}\n` +
+                      `💲 Preço: ${price.toFixed(precision)}\n` +
+                      `🔹 RSI 5m: ${rsi5m.toFixed(2)}\n` +
+                      `🔹 RSI 15m: ${rsi15m.toFixed(2)}\n` +
+                      `🔹 RSI 1h: ${rsi1h.toFixed(2)}\n` +
+                      `${emoji} Monitor @J4Rviz`;
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Exaustão - Realizar Lucros/Parcial\n\n${alertText}`, {
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true
-      }));
-      if (!state.ultimoAlertaPorAtivo[symbol]) state.ultimoAlertaPorAtivo[symbol] = {};
-      state.ultimoAlertaPorAtivo[symbol]['rsi'] = agora;
-      logger.info(`Alerta de exaustão enviado para ${symbol}: RSI 5m=${rsi5m.toFixed(2)}, RSI 15m=${rsi15m.toFixed(2)}, RSI 1h=${rsi1h.toFixed(2)}`);
-    } catch (e) {
-      logger.error(`Erro ao enviar alerta de exaustão para ${symbol}: ${e.message}`);
-      await reconnect();
-    }
-  } else if (isOversoldSignal) {
-    try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Analisar- RSI Baixo\n\n${alertText}`, {
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true
-      }));
-      if (!state.ultimoAlertaPorAtivo[symbol]) state.ultimoAlertaPorAtivo[symbol] = {};
-      state.ultimoAlertaPorAtivo[symbol]['rsi'] = agora;
-      logger.info(`Alerta de sobrevenda enviado para ${symbol}: RSI 5m=${rsi5m.toFixed(2)}, RSI 15m=${rsi15m.toFixed(2)}, RSI 1h=${rsi1h.toFixed(2)}`);
-    } catch (e) {
-      logger.error(`Erro ao enviar alerta de sobrevenda para ${symbol}: ${e.message}`);
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, plainText));
+      logger.info(`Alerta em texto simples enviado para ${symbol}`);
+    } catch (e2) {
+      logger.error(`Erro ao enviar alerta em texto simples para ${symbol}: ${e2.message}`);
       await reconnect();
     }
   }
 }
 
+// ================= VERIFICAÇÃO ================= //
 async function checkConditions() {
   try {
     if (!state.isConnected) {
-      logger.warn('Conexão não estabelecida, tentando reconectar antes de verificar condições');
+      logger.warn('Conexão não estabelecida, tentando reconectar...');
       await reconnect();
     }
-    await limitConcurrency(config.PARES_MONITORADOS, async (symbol) => {
-      const cacheKeyPrefix = `ohlcv_${symbol}`;
-      const ohlcv5mRaw = getCachedData(`${cacheKeyPrefix}_5m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '5m', undefined, config.RSI_PERIOD + 1));
-      const ohlcv15mRaw = getCachedData(`${cacheKeyPrefix}_15m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '15m', undefined, config.RSI_PERIOD + 1));
-      const ohlcv1hRaw = getCachedData(`${cacheKeyPrefix}_1h`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '1h', undefined, config.RSI_PERIOD + 1));
-      
-      setCachedData(`${cacheKeyPrefix}_5m`, ohlcv5mRaw);
-      setCachedData(`${cacheKeyPrefix}_15m`, ohlcv15mRaw);
-      setCachedData(`${cacheKeyPrefix}_1h`, ohlcv1hRaw);
+    for (const symbol of config.PARES_MONITORADOS) {
+      const cacheKey5m = `ohlcv_${symbol}_5m`;
+      const cacheKey15m = `ohlcv_${symbol}_15m`;
+      const cacheKey1h = `ohlcv_${symbol}_1h`;
+      let ohlcv5mRaw, ohlcv15mRaw, ohlcv1hRaw;
+      try {
+        ohlcv5mRaw = getCachedData(cacheKey5m) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '5m', undefined, config.RSI_PERIOD + 1));
+        ohlcv15mRaw = getCachedData(cacheKey15m) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '15m', undefined, config.RSI_PERIOD + 1));
+        ohlcv1hRaw = getCachedData(cacheKey1h) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '1h', undefined, config.RSI_PERIOD + 1));
+      } catch (e) {
+        logger.error(`Erro ao buscar OHLCV para ${symbol}: ${e.message}`);
+        clearCacheOnError(symbol);
+        continue;
+      }
 
       if (!ohlcv5mRaw || !ohlcv15mRaw || !ohlcv1hRaw) {
-        logger.warn(`Dados OHLCV insuficientes para ${symbol}, pulando...`);
-        return;
+        logger.warn(`Dados OHLCV insuficientes para ${symbol}`);
+        clearCacheOnError(symbol);
+        continue;
       }
+
+      setCachedData(cacheKey5m, ohlcv5mRaw);
+      setCachedData(cacheKey15m, ohlcv15mRaw);
+      setCachedData(cacheKey1h, ohlcv1hRaw);
 
       const ohlcv5m = normalizeOHLCV(ohlcv5mRaw);
       const ohlcv15m = normalizeOHLCV(ohlcv15mRaw);
       const ohlcv1h = normalizeOHLCV(ohlcv1hRaw);
 
-      const closes5m = ohlcv5m.map(c => c.close).filter(c => !isNaN(c));
-      const currentPrice = closes5m[closes5m.length - 1];
-      if (isNaN(currentPrice)) {
-        logger.warn(`Preço atual inválido para ${symbol}, pulando...`);
-        return;
-      }
-
       const rsi5mValues = calculateRSI(ohlcv5m);
       const rsi15mValues = calculateRSI(ohlcv15m);
       const rsi1hValues = calculateRSI(ohlcv1h);
 
-      if (!rsi5mValues.length || !rsi15mValues.length || !rsi1hValues.length) {
-        logger.warn(`Indicadores RSI insuficientes para ${symbol}, pulando...`);
-        return;
+      if (rsi5mValues.length && rsi15mValues.length && rsi1hValues.length) {
+        const currentPrice = ohlcv5m[ohlcv5m.length - 1].close;
+        const rsi5m = rsi5mValues[rsi5mValues.length - 1];
+        const rsi15m = rsi15mValues[rsi15mValues.length - 1];
+        const rsi1h = rsi1hValues[rsi1hValues.length - 1];
+        logger.info(`RSI para ${symbol}: 5m=${rsi5m.toFixed(2)}, 15m=${rsi15m.toFixed(2)}, 1h=${rsi1h.toFixed(2)}`);
+        await sendAlertRSI(symbol, {
+          ohlcv5m,
+          ohlcv15m,
+          ohlcv1h,
+          price: currentPrice,
+          rsi5m,
+          rsi15m,
+          rsi1h
+        });
+      } else {
+        logger.warn(`Indicadores RSI insuficientes para ${symbol}`);
       }
-
-      await sendAlertRSI(symbol, {
-        ohlcv5m,
-        ohlcv15m,
-        ohlcv1h,
-        price: currentPrice,
-        rsi5m: rsi5mValues[rsi5mValues.length - 1],
-        rsi15m: rsi15mValues[rsi15mValues.length - 1],
-        rsi1h: rsi1hValues[rsi1hValues.length - 1],
-      });
-    }, 5);
+    }
   } catch (e) {
-    logger.error(`Erro ao processar condições: ${e.message}`);
+    logger.error(`Erro em checkConditions: ${e.message}`);
     await reconnect();
   }
 }
 
+// ================= MAIN ================= //
 async function main() {
   logger.info('Iniciando RSI Alert Bot');
   try {
-    // Inicializar conexão
     await withRetry(() => bot.api.getMe());
     await withRetry(() => exchangeSpot.fetchTime());
     state.isConnected = true;
-    logger.info('Conexão inicial com Binance e Telegram estabelecida');
+    logger.info('Conexão inicial estabelecida');
 
     await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 RSI alert 💹 Start...'));
     await checkConditions();
-    setInterval(checkConditions, config.INTERVALO_ALERTA_5M_MS);
+    setInterval(checkConditions, config.INTERVALO_ALERTA_MS);
   } catch (e) {
     logger.error(`Erro ao iniciar bot: ${e.message}`);
     await reconnect();
-    // Tentar reiniciar o main após reconexão
     setTimeout(main, config.RECONNECT_DELAY_BASE_MS);
   }
 }
