@@ -181,10 +181,10 @@ function calculateATR(data, period, symbol) {
   return atrValue;
 }
 
-function calculateFibonacciLevels(data, symbol, isBullish) {
+function calculateFibonacciRetracements(data, symbol, isBullish) {
   if (!data || data.length < 2) {
-    logger.warn(`Dados insuficientes para calcular níveis de Fibonacci para ${symbol}`);
-    return { retracement38: null, retracement61: null, target100: null, target161: null };
+    logger.warn(`Dados insuficientes para calcular retrações de Fibonacci para ${symbol}`);
+    return { retracement38: null, retracement61: null };
   }
   const lastCandle = data[data.length - 1];
   const prevCandle = data[data.length - 2];
@@ -193,29 +193,37 @@ function calculateFibonacciLevels(data, symbol, isBullish) {
   const move = Math.abs(swingHigh - swingLow);
   
   if (isBullish) {
-    // Para rompimento de alta
     const retracement38 = lastCandle.close - move * 0.382;
     const retracement61 = lastCandle.close - move * 0.618;
-    const target100 = lastCandle.close + move;
-    const target161 = lastCandle.close + move * 1.618;
     return {
       retracement38: parseFloat(retracement38.toFixed(8)),
-      retracement61: parseFloat(retracement61.toFixed(8)),
-      target100: parseFloat(target100.toFixed(8)),
-      target161: parseFloat(target161.toFixed(8))
+      retracement61: parseFloat(retracement61.toFixed(8))
     };
   } else {
-    // Ascending order
-    // Para rompimento de baixa
     const retracement38 = lastCandle.close + move * 0.382;
     const retracement61 = lastCandle.close + move * 0.618;
-    const target100 = lastCandle.close - move;
-    const target161 = lastCandle.close - move * 1.618;
     return {
       retracement38: parseFloat(retracement38.toFixed(8)),
-      retracement61: parseFloat(retracement61.toFixed(8)),
-      target100: parseFloat(target100.toFixed(8)),
-      target161: parseFloat(target161.toFixed(8))
+      retracement61: parseFloat(retracement61.toFixed(8))
+    };
+  }
+}
+
+function calculateATRTargets(price, atr, isBullish) {
+  if (!price || !atr) {
+    return { target1: null, target2: null, target3: null };
+  }
+  if (isBullish) {
+    return {
+      target1: parseFloat((price + atr).toFixed(8)),
+      target2: parseFloat((price + atr * 2).toFixed(8)),
+      target3: parseFloat((price + atr * 3).toFixed(8))
+    };
+  } else {
+    return {
+      target1: parseFloat((price - atr).toFixed(8)),
+      target2: parseFloat((price - atr * 2).toFixed(8)),
+      target3: parseFloat((price - atr * 3).toFixed(8))
     };
   }
 }
@@ -476,7 +484,7 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para rompimentos de alta
   if (topBullishBreak.length > 0) {
-    let bullishAlertText = `🟢*Rompimento de Alta 15m Acima da EMA 34 🚀*\n\n`;
+    let bullishAlertText = `🟢*Rompimento 💥🚀💥*\n\n`;
     bullishAlertText += await Promise.all(topBullishBreak.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       let lsrSymbol = '';
@@ -509,6 +517,7 @@ async function sendMonitorAlert(coins) {
       const stoch1dDEmoji = getStochasticEmoji(coin.stoch1d.d);
       const stoch1dDir = getSetaDirecao(coin.stoch1d.k, coin.stoch1d.previousK);
       const fib = coin.fibonacci;
+      const atrTargets = coin.atrTargets;
       const stopLoss = coin.atr ? parseFloat((coin.price - coin.atr * config.ATR_MULTIPLIER).toFixed(8)) : 'N/A';
       return `${i + 1}. 🔹 *${cleanSymbol(coin.symbol)}* [- TradingView](${tradingViewLink})\n` +
              `   💲 Preço: ${formatPrice(coin.price)}\n` +
@@ -524,8 +533,9 @@ async function sendMonitorAlert(coins) {
              `   Resistência: ${formatPrice(coin.supportResistance.resistance)}\n` +
              `   Retração 38.2%: ${formatPrice(fib.retracement38)}\n` +
              `   Retração 61.8%: ${formatPrice(fib.retracement61)}\n` +
-             `   Alvo 100%: ${formatPrice(fib.target100)}\n` +
-             `   Alvo 161.8%: ${formatPrice(fib.target161)}\n` +
+             `   Alvo 1x ATR: ${formatPrice(atrTargets.target1)}\n` +
+             `   Alvo 2x ATR: ${formatPrice(atrTargets.target2)}\n` +
+             `   Alvo 3x ATR: ${formatPrice(atrTargets.target3)}\n` +
              `   Stop ATR: ${formatPrice(stopLoss)}\n`;
     })).then(results => results.join('\n'));
     bullishAlertText += `\n☑︎ 🤖 Monitor - @J4Rviz`;
@@ -536,7 +546,7 @@ async function sendMonitorAlert(coins) {
 
   // Alerta para rompimentos de baixa
   if (topBearishBreak.length > 0) {
-    let bearishAlertText = `🔴*Rompimento de Baixa 15m Abaixo da EMA 34 📉*\n\n`;
+    let bearishAlertText = `🔴*Rompimento 🔻📉🔻*\n\n`;
     bearishAlertText += await Promise.all(topBearishBreak.map(async (coin, i) => {
       const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
       let lsrSymbol = '';
@@ -569,6 +579,7 @@ async function sendMonitorAlert(coins) {
       const stoch1dDEmoji = getStochasticEmoji(coin.stoch1d.d);
       const stoch1dDir = getSetaDirecao(coin.stoch1d.k, coin.stoch1d.previousK);
       const fib = coin.fibonacci;
+      const atrTargets = coin.atrTargets;
       const stopLoss = coin.atr ? parseFloat((coin.price + coin.atr * config.ATR_MULTIPLIER).toFixed(8)) : 'N/A';
       return `${i + 1}. 🔻 *${cleanSymbol(coin.symbol)}* [- TradingView](${tradingViewLink})\n` +
              `   💲 Preço: ${formatPrice(coin.price)}\n` +
@@ -584,8 +595,9 @@ async function sendMonitorAlert(coins) {
              `   Resistência: ${formatPrice(coin.supportResistance.resistance)}\n` +
              `   Retração 38.2%: ${formatPrice(fib.retracement38)}\n` +
              `   Retração 61.8%: ${formatPrice(fib.retracement61)}\n` +
-             `   Alvo 100%: ${formatPrice(fib.target100)}\n` +
-             `   Alvo 161.8%: ${formatPrice(fib.target161)}\n` +
+             `   Alvo 1x ATR: ${formatPrice(atrTargets.target1)}\n` +
+             `   Alvo 2x ATR: ${formatPrice(atrTargets.target2)}\n` +
+             `   Alvo 3x ATR: ${formatPrice(atrTargets.target3)}\n` +
              `   Stop ATR: ${formatPrice(stopLoss)}\n`;
     })).then(results => results.join('\n'));
     bearishAlertText += `\n☑︎ 🤖 Monitor - @J4Rviz`;
@@ -668,9 +680,12 @@ async function checkCoins() {
         const ema15m = calculateEMA(ohlcv15m, config.EMA_PERIOD, symbol);
         const atr = calculateATR(ohlcv15m, config.ATR_PERIOD, symbol);
         const structure15m = detectStructureBreak(ohlcv15m, symbol);
-        const fibonacci = structure15m.bullishBreak ? calculateFibonacciLevels(ohlcv15m, symbol, true) :
-                         structure15m.bearishBreak ? calculateFibonacciLevels(ohlcv15m, symbol, false) :
-                         { retracement38: null, retracement61: null, target100: null, target161: null };
+        const fibonacci = structure15m.bullishBreak ? calculateFibonacciRetracements(ohlcv15m, symbol, true) :
+                         structure15m.bearishBreak ? calculateFibonacciRetracements(ohlcv15m, symbol, false) :
+                         { retracement38: null, retracement61: null };
+        const atrTargets = structure15m.bullishBreak ? calculateATRTargets(price, atr, true) :
+                          structure15m.bearishBreak ? calculateATRTargets(price, atr, false) :
+                          { target1: null, target2: null, target3: null };
         const lsr = (await fetchLSR(symbol)).value;
         const funding = await fetchFundingRate(symbol);
         const delta = await calculateAggressiveDelta(symbol);
@@ -679,8 +694,8 @@ async function checkCoins() {
         const stoch4h = calculateStochastic(ohlcv4h, symbol);
         const stoch1d = calculateStochastic(ohlcv1d, symbol);
         const supportResistance = calculateSupportResistance(ohlcv50, symbol);
-        logger.info(`Moeda processada: ${symbol}, EMA15m: ${ema15m}, ATR: ${atr}, BullishBreak: ${structure15m.bullishBreak}, BearishBreak: ${structure15m.bearishBreak}, Fib: ${JSON.stringify(fibonacci)}`);
-        return { symbol, price, ema15m, atr, structure15m, fibonacci, lsr, funding, delta, oi5m, oi15m, stoch4h, stoch1d, supportResistance };
+        logger.info(`Moeda processada: ${symbol}, EMA15m: ${ema15m}, ATR: ${atr}, BullishBreak: ${structure15m.bullishBreak}, BearishBreak: ${structure15m.bearishBreak}, Fib: ${JSON.stringify(fibonacci)}, ATR Targets: ${JSON.stringify(atrTargets)}`);
+        return { symbol, price, ema15m, atr, structure15m, fibonacci, atrTargets, lsr, funding, delta, oi5m, oi15m, stoch4h, stoch1d, supportResistance };
       } catch (e) {
         logger.warn(`Erro ao processar ${symbol}: ${e.message}`);
         return null;
@@ -688,7 +703,7 @@ async function checkCoins() {
     }, 5);
     const validCoins = coinsData.filter(coin => coin !== null);
     logger.info(`Moedas válidas processadas: ${validCoins.length}`);
-    validCoins.forEach(coin => logger.info(`Moeda: ${coin.symbol}, EMA15m: ${coin.ema15m}, ATR: ${coin.atr}, BullishBreak: ${coin.structure15m.bullishBreak}, BearishBreak: ${coin.structure15m.bearishBreak}, Fib: ${JSON.stringify(coin.fibonacci)}`));
+    validCoins.forEach(coin => logger.info(`Moeda: ${coin.symbol}, EMA15m: ${coin.ema15m}, ATR: ${coin.atr}, BullishBreak: ${coin.structure15m.bullishBreak}, BearishBreak: ${coin.structure15m.bearishBreak}, Fib: ${JSON.stringify(coin.fibonacci)}, ATR Targets: ${JSON.stringify(coin.atrTargets)}`));
     if (validCoins.length > 0) {
       await sendMonitorAlert(validCoins);
     } else {
