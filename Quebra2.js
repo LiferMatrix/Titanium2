@@ -16,7 +16,8 @@ const config = {
   MAX_MESSAGE_LENGTH: 4000,
   EMA_PERIOD: 34,
   ATR_PERIOD: 14,
-  ATR_MULTIPLIER: 1.5
+  ATR_MULTIPLIER: 1.5,
+  VOLUME_THRESHOLD_MULTIPLIER: 2 // Multiplicador para volume anormal
 };
 
 // Logger
@@ -288,6 +289,41 @@ function calculateSupportResistance(data, symbol) {
   };
 }
 
+function calculateAbnormalVolume(ohlcv3m, ohlcv1h, delta, symbol) {
+  const result = {
+    volume3m: { isAbnormal: false, type: null },
+    volume1h: { isAbnormal: false, type: null }
+  };
+
+  // Volume 3m
+  if (!ohlcv3m || ohlcv3m.length < 11) {
+    logger.warn(`Dados insuficientes para calcular volume anormal (3m) para ${symbol}: ${ohlcv3m?.length || 0} velas disponíveis`);
+  } else {
+    const previousVolumes3m = ohlcv3m.slice(ohlcv3m.length - 11, ohlcv3m.length - 1).map(d => d.volume);
+    const averageVolume3m = previousVolumes3m.reduce((sum, vol) => sum + vol, 0) / previousVolumes3m.length;
+    const currentVolume3m = ohlcv3m[ohlcv3m.length - 1].volume;
+    const volumeThreshold3m = averageVolume3m * config.VOLUME_THRESHOLD_MULTIPLIER;
+    result.volume3m.isAbnormal = currentVolume3m > volumeThreshold3m;
+    result.volume3m.type = result.volume3m.isAbnormal ? (delta.isBuyPressure ? 'Compra' : 'Venda') : null;
+    logger.info(`Volume anormal (3m) para ${symbol}: Current=${currentVolume3m}, Average=${averageVolume3m}, IsAbnormal=${result.volume3m.isAbnormal}, Type=${result.volume3m.type}`);
+  }
+
+  // Volume 1h
+  if (!ohlcv1h || ohlcv1h.length < 11) {
+    logger.warn(`Dados insuficientes para calcular volume anormal (1h) para ${symbol}: ${ohlcv1h?.length || 0} velas disponíveis`);
+  } else {
+    const previousVolumes1h = ohlcv1h.slice(ohlcv1h.length - 11, ohlcv1h.length - 1).map(d => d.volume);
+    const averageVolume1h = previousVolumes1h.reduce((sum, vol) => sum + vol, 0) / previousVolumes1h.length;
+    const currentVolume1h = ohlcv1h[ohlcv1h.length - 1].volume;
+    const volumeThreshold1h = averageVolume1h * config.VOLUME_THRESHOLD_MULTIPLIER;
+    result.volume1h.isAbnormal = currentVolume1h > volumeThreshold1h;
+    result.volume1h.type = result.volume1h.isAbnormal ? (delta.isBuyPressure ? 'Compra' : 'Venda') : null;
+    logger.info(`Volume anormal (1h) para ${symbol}: Current=${currentVolume1h}, Average=${averageVolume1h}, IsAbnormal=${result.volume1h.isAbnormal}, Type=${result.volume1h.type}`);
+  }
+
+  return result;
+}
+
 async function fetchLSR(symbol) {
   const cacheKey = `lsr_${symbol}`;
   const cached = getCachedData(cacheKey);
@@ -498,9 +534,9 @@ async function sendMonitorAlert(coins) {
         if (coin.funding.current <= -0.002) fundingRateEmoji = '🟢🟢🟢';
         else if (coin.funding.current <= -0.001) fundingRateEmoji = '🟢🟢';
         else if (coin.funding.current <= -0.0005) fundingRateEmoji = '🟢';
-        else if (coin.funding.current >= 0.001) fundingRateEmoji = '🔴🔴🔴';
-        else if (coin.funding.current >= 0.0003) fundingRateEmoji = '🔴🔴';
-        else if (coin.funding.current >= 0.0002) fundingRateEmoji = '🔴';
+        else if (coin.funding.current >= 0.001) fundingRateEmoji = '🔴';
+        else if (coin.funding.current >= 0.005) fundingRateEmoji = '🔴🔴';
+        else if (coin.funding.current >= 0.1) fundingRateEmoji = '🔴🔴🔴';
         else fundingRateEmoji = '🟢';
       }
       const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
@@ -519,12 +555,20 @@ async function sendMonitorAlert(coins) {
       const fib = coin.fibonacci;
       const atrTargets = coin.atrTargets;
       const stopLoss = coin.atr ? parseFloat((coin.price - coin.atr * config.ATR_MULTIPLIER).toFixed(8)) : 'N/A';
+      const volume3mText = coin.volume.volume3m.isAbnormal ? 
+        `${coin.volume.volume3m.type === 'Compra' ? '🟢' : '🔴'} Volume Anormal (3m): ${coin.volume.volume3m.type}` : 
+        'Volume Normal (3m)';
+      const volume1hText = coin.volume.volume1h.isAbnormal ? 
+        `${coin.volume.volume1h.type === 'Compra' ? '🟢' : '🔴'} Volume Anormal (1h): ${coin.volume.volume1h.type}` : 
+        'Volume Normal (1h)';
       return `${i + 1}. 🔹 *${cleanSymbol(coin.symbol)}* [- TradingView](${tradingViewLink})\n` +
              `   💲 Preço: ${formatPrice(coin.price)}\n` +
              `   EMA 34 (15m): ${formatPrice(coin.ema15m)}\n` +
+             `   ${volume3mText}\n` +
+             `   ${volume1hText}\n` +
              `   LSR: ${lsrText}\n` +
-             `   Stoch (4h): %K ${stoch4hK}${stoch4hKEmoji} ${stoch4hDir} | %D ${stoch4hD}${stoch4hDEmoji}\n` +
-             `   Stoch (1d): %K ${stoch1dK}${stoch1dKEmoji} ${stoch1dDir} | %D ${stoch1dD}${stoch1dDEmoji}\n` +
+             `   Stoch (4h): %K ${stoch4hK}${stoch4hKEmoji} ${stoch4hDir} \n` +
+             `   Stoch (1d): %K ${stoch1dK}${stoch1dKEmoji} ${stoch1dDir} \n` +
              `   Vol.Delta: ${deltaText}\n` +
              `   Fund.Rate: ${fundingRateEmoji}${format(coin.funding.current, 5)}%\n` +
              `   OI 5m: ${oi5mText}\n` +
@@ -542,68 +586,6 @@ async function sendMonitorAlert(coins) {
     logger.info(`Tamanho da mensagem de rompimentos de alta: ${bullishAlertText.length} caracteres`);
     await sendTelegramMessage(bullishAlertText);
     logger.info('Alerta de moedas com rompimento de alta enviado com sucesso');
-  }
-
-  // Alerta para rompimentos de baixa
-  if (topBearishBreak.length > 0) {
-    let bearishAlertText = `🔴*Rompimento 🔻📉🔻*\n\n`;
-    bearishAlertText += await Promise.all(topBearishBreak.map(async (coin, i) => {
-      const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${coin.symbol.replace('/', '')}&interval=15`;
-      let lsrSymbol = '';
-      if (coin.lsr !== null && !isNaN(coin.lsr)) {
-        if (coin.lsr <= 1.4) lsrSymbol = '✅ Baixo';
-        else if (coin.lsr >= 2.8) lsrSymbol = '📛 Alto';
-      }
-      const lsrText = coin.lsr !== null && !isNaN(coin.lsr) ? format(coin.lsr) + ` ${lsrSymbol}` : 'Indisponível';
-      let fundingRateEmoji = '';
-      if (coin.funding.current !== null) {
-        if (coin.funding.current <= -0.002) fundingRateEmoji = '🟢🟢🟢';
-        else if (coin.funding.current <= -0.001) fundingRateEmoji = '🟢🟢';
-        else if (coin.funding.current <= -0.0005) fundingRateEmoji = '🟢';
-        else if (coin.funding.current >= 0.001) fundingRateEmoji = '🔴🔴🔴';
-        else if (coin.funding.current >= 0.0003) fundingRateEmoji = '🔴🔴';
-        else if (coin.funding.current >= 0.0002) fundingRateEmoji = '🔴';
-        else fundingRateEmoji = '🟢';
-      }
-      const deltaText = coin.delta.isBuyPressure ? `💹${format(coin.delta.deltaPercent)}%` : `⭕${format(coin.delta.deltaPercent)}%`;
-      const oi5mText = coin.oi5m.isRising ? '⬆️ Subindo' : '⬇️ Descendo';
-      const oi15mText = coin.oi15m.isRising ? '⬆️ Subindo' : '⬇️ Descendo';
-      const stoch4hK = coin.stoch4h.k !== null ? format(coin.stoch4h.k) : 'N/A';
-      const stoch4hD = coin.stoch4h.d !== null ? format(coin.stoch4h.d) : 'N/A';
-      const stoch4hKEmoji = getStochasticEmoji(coin.stoch4h.k);
-      const stoch4hDEmoji = getStochasticEmoji(coin.stoch4h.d);
-      const stoch4hDir = getSetaDirecao(coin.stoch4h.k, coin.stoch4h.previousK);
-      const stoch1dK = coin.stoch1d.k !== null ? format(coin.stoch1d.k) : 'N/A';
-      const stoch1dD = coin.stoch1d.d !== null ? format(coin.stoch1d.d) : 'N/A';
-      const stoch1dKEmoji = getStochasticEmoji(coin.stoch1d.k);
-      const stoch1dDEmoji = getStochasticEmoji(coin.stoch1d.d);
-      const stoch1dDir = getSetaDirecao(coin.stoch1d.k, coin.stoch1d.previousK);
-      const fib = coin.fibonacci;
-      const atrTargets = coin.atrTargets;
-      const stopLoss = coin.atr ? parseFloat((coin.price + coin.atr * config.ATR_MULTIPLIER).toFixed(8)) : 'N/A';
-      return `${i + 1}. 🔻 *${cleanSymbol(coin.symbol)}* [- TradingView](${tradingViewLink})\n` +
-             `   💲 Preço: ${formatPrice(coin.price)}\n` +
-             `   EMA 34 (15m): ${formatPrice(coin.ema15m)}\n` +
-             `   LSR: ${lsrText}\n` +
-             `   Stoch (4h): %K ${stoch4hK}${stoch4hKEmoji} ${stoch4hDir} | %D ${stoch4hD}${stoch4hDEmoji}\n` +
-             `   Stoch (1d): %K ${stoch1dK}${stoch1dKEmoji} ${stoch1dDir} | %D ${stoch1dD}${stoch1dDEmoji}\n` +
-             `   Vol.Delta: ${deltaText}\n` +
-             `   Fund.Rate: ${fundingRateEmoji}${format(coin.funding.current, 5)}%\n` +
-             `   OI 5m: ${oi5mText}\n` +
-             `   OI 15m: ${oi15mText}\n` +
-             `   Suporte: ${formatPrice(coin.supportResistance.support)}\n` +
-             `   Resistência: ${formatPrice(coin.supportResistance.resistance)}\n` +
-             `   Retração 38.2%: ${formatPrice(fib.retracement38)}\n` +
-             `   Retração 61.8%: ${formatPrice(fib.retracement61)}\n` +
-             `   Alvo 1x ATR: ${formatPrice(atrTargets.target1)}\n` +
-             `   Alvo 2x ATR: ${formatPrice(atrTargets.target2)}\n` +
-             `   Alvo 3x ATR: ${formatPrice(atrTargets.target3)}\n` +
-             `   Stop ATR: ${formatPrice(stopLoss)}\n`;
-    })).then(results => results.join('\n'));
-    bearishAlertText += `\n☑︎ 🤖 Monitor - @J4Rviz`;
-    logger.info(`Tamanho da mensagem de rompimentos de baixa: ${bearishAlertText.length} caracteres`);
-    await sendTelegramMessage(bearishAlertText);
-    logger.info('Alerta de moedas com rompimento de baixa enviado com sucesso');
   }
 
   if (topBullishBreak.length === 0 && topBearishBreak.length === 0) {
@@ -645,6 +627,25 @@ async function checkCoins() {
           logger.warn(`Preço inválido para ${symbol}, pulando...`);
           return null;
         }
+        // Buscar OHLCV para 3m
+        const ohlcv3mRaw = getCachedData(`ohlcv_${symbol}_3m`) ||
+          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '3m', undefined, 12));
+        setCachedData(`ohlcv_${symbol}_3m`, ohlcv3mRaw);
+        const ohlcv3m = normalizeOHLCV(ohlcv3mRaw, symbol);
+        if (!ohlcv3m.length) {
+          logger.warn(`Dados OHLCV insuficientes para ${symbol} (3m), pulando...`);
+          return null;
+        }
+        // Buscar OHLCV para 1h
+        const ohlcv1hRaw = getCachedData(`ohlcv_${symbol}_1h`) ||
+          await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '1h', undefined, 12));
+        setCachedData(`ohlcv_${symbol}_1h`, ohlcv1hRaw);
+        const ohlcv1h = normalizeOHLCV(ohlcv1hRaw, symbol);
+        if (!ohlcv1h.length) {
+          logger.warn(`Dados OHLCV insuficientes para ${symbol} (1h), pulando...`);
+          return null;
+        }
+        // Buscar OHLCV para 15m
         const ohlcv15mRaw = getCachedData(`ohlcv_${symbol}_15m`) ||
           await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '15m', undefined, Math.max(config.EMA_PERIOD, config.ATR_PERIOD) + 2));
         setCachedData(`ohlcv_${symbol}_15m`, ohlcv15mRaw);
@@ -653,6 +654,7 @@ async function checkCoins() {
           logger.warn(`Dados OHLCV insuficientes para ${symbol} (15m), pulando...`);
           return null;
         }
+        // Buscar OHLCV para 4h
         const ohlcv4hRaw = getCachedData(`ohlcv_${symbol}_4h`) ||
           await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '4h', undefined, 8));
         setCachedData(`ohlcv_${symbol}_4h`, ohlcv4hRaw);
@@ -661,6 +663,7 @@ async function checkCoins() {
           logger.warn(`Dados OHLCV insuficientes para ${symbol} (4h), pulando...`);
           return null;
         }
+        // Buscar OHLCV para 1d
         const ohlcv1dRaw = getCachedData(`ohlcv_${symbol}_1d`) ||
           await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '1d', undefined, 8));
         setCachedData(`ohlcv_${symbol}_1d`, ohlcv1dRaw);
@@ -669,6 +672,7 @@ async function checkCoins() {
           logger.warn(`Dados OHLCV insuficientes para ${symbol} (1d), pulando...`);
           return null;
         }
+        // Buscar OHLCV para 50 períodos
         const ohlcv50Raw = getCachedData(`ohlcv_${symbol}_50`) ||
           await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '15m', undefined, 50));
         setCachedData(`ohlcv_${symbol}_50`, ohlcv50Raw);
@@ -689,13 +693,14 @@ async function checkCoins() {
         const lsr = (await fetchLSR(symbol)).value;
         const funding = await fetchFundingRate(symbol);
         const delta = await calculateAggressiveDelta(symbol);
+        const volume = calculateAbnormalVolume(ohlcv3m, ohlcv1h, delta, symbol);
         const oi5m = await fetchOpenInterest(symbol, '5m');
         const oi15m = await fetchOpenInterest(symbol, '15m');
         const stoch4h = calculateStochastic(ohlcv4h, symbol);
         const stoch1d = calculateStochastic(ohlcv1d, symbol);
         const supportResistance = calculateSupportResistance(ohlcv50, symbol);
-        logger.info(`Moeda processada: ${symbol}, EMA15m: ${ema15m}, ATR: ${atr}, BullishBreak: ${structure15m.bullishBreak}, BearishBreak: ${structure15m.bearishBreak}, Fib: ${JSON.stringify(fibonacci)}, ATR Targets: ${JSON.stringify(atrTargets)}`);
-        return { symbol, price, ema15m, atr, structure15m, fibonacci, atrTargets, lsr, funding, delta, oi5m, oi15m, stoch4h, stoch1d, supportResistance };
+        logger.info(`Moeda processada: ${symbol}, EMA15m: ${ema15m}, ATR: ${atr}, BullishBreak: ${structure15m.bullishBreak}, BearishBreak: ${structure15m.bearishBreak}, Fib: ${JSON.stringify(fibonacci)}, ATR Targets: ${JSON.stringify(atrTargets)}, Volume3m: ${JSON.stringify(volume.volume3m)}, Volume1h: ${JSON.stringify(volume.volume1h)}`);
+        return { symbol, price, ema15m, atr, structure15m, fibonacci, atrTargets, lsr, funding, delta, volume, oi5m, oi15m, stoch4h, stoch1d, supportResistance };
       } catch (e) {
         logger.warn(`Erro ao processar ${symbol}: ${e.message}`);
         return null;
@@ -703,7 +708,7 @@ async function checkCoins() {
     }, 5);
     const validCoins = coinsData.filter(coin => coin !== null);
     logger.info(`Moedas válidas processadas: ${validCoins.length}`);
-    validCoins.forEach(coin => logger.info(`Moeda: ${coin.symbol}, EMA15m: ${coin.ema15m}, ATR: ${coin.atr}, BullishBreak: ${coin.structure15m.bullishBreak}, BearishBreak: ${coin.structure15m.bearishBreak}, Fib: ${JSON.stringify(coin.fibonacci)}, ATR Targets: ${JSON.stringify(coin.atrTargets)}`));
+    validCoins.forEach(coin => logger.info(`Moeda: ${coin.symbol}, EMA15m: ${coin.ema15m}, ATR: ${coin.atr}, BullishBreak: ${coin.structure15m.bullishBreak}, BearishBreak: ${coin.structure15m.bearishBreak}, Fib: ${JSON.stringify(coin.fibonacci)}, ATR Targets: ${JSON.stringify(coin.atrTargets)}, Volume3m: ${JSON.stringify(coin.volume.volume3m)}, Volume1h: ${JSON.stringify(coin.volume.volume1h)}`));
     if (validCoins.length > 0) {
       await sendMonitorAlert(validCoins);
     } else {
@@ -717,7 +722,7 @@ async function checkCoins() {
 async function main() {
   logger.info('Iniciando monitor de moedas');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium Structure Break MONITOR !'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium Structure Break!'));
     await checkCoins();
     setInterval(checkCoins, config.INTERVALO_ALERTA_MS);
   } catch (e) {
