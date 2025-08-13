@@ -13,15 +13,17 @@ const config = {
   INTERVALO_ALERTA_3M_MS: 180000,
   TEMPO_COOLDOWN_MS: 15 * 60 * 1000,
   WPR_PERIOD: 26,
-  WPR_LOW_THRESHOLD: -90,
-  WPR_HIGH_THRESHOLD: -10,
+  WPR_LOW_THRESHOLD: -97,
+  WPR_HIGH_THRESHOLD: -3,
   ATR_PERIOD: 14,
   RSI_PERIOD: 14,
+  FI_PERIOD: 13,
   ATR_PERCENT_MIN: 0.5,
   ATR_PERCENT_MAX: 3.0,
   CACHE_TTL: 10 * 60 * 1000,
   EMA_13_PERIOD: 13,
   EMA_34_PERIOD: 34,
+  EMA_89_PERIOD: 89,
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
 };
@@ -160,6 +162,37 @@ function calculateRSI(data) {
   return rsi.filter(v => !isNaN(v));
 }
 
+function calculateOBV(data) {
+  let obv = 0;
+  const obvValues = [data[0].volume || data[0][5]];
+  for (let i = 1; i < data.length; i++) {
+    const curr = data[i];
+    const prev = data[i - 1];
+    const currClose = curr.close || curr[4];
+    const prevClose = prev.close || prev[4];
+    const volume = curr.volume || curr[5];
+    if (isNaN(currClose) || isNaN(prevClose) || isNaN(volume)) continue;
+    if (currClose > prevClose) obv += volume;
+    else if (currClose < prevClose) obv -= volume;
+    obvValues.push(obv);
+  }
+  return obvValues;
+}
+
+function calculateCVD(data) {
+  let cvd = 0;
+  for (let i = 1; i < data.length; i++) {
+    const curr = data[i];
+    const currClose = curr.close || curr[4];
+    const currOpen = curr.open || curr[1];
+    const volume = curr.volume || curr[5];
+    if (isNaN(currClose) || isNaN(currOpen) || isNaN(volume)) continue;
+    if (currClose > currOpen) cvd += volume;
+    else if (currClose < currOpen) cvd -= volume;
+  }
+  return cvd;
+}
+
 function calculateATR(data) {
   const atr = TechnicalIndicators.ATR.calculate({
     period: config.ATR_PERIOD,
@@ -168,6 +201,20 @@ function calculateATR(data) {
     close: data.map(c => c.close || c[4])
   });
   return atr.filter(v => !isNaN(v));
+}
+
+function calculateForceIndex(data, period = config.FI_PERIOD) {
+  if (!data || data.length < 2) return [];
+  const fiValues = [];
+  for (let i = 1; i < data.length; i++) {
+    const closeCurrent = data[i].close || data[i][4];
+    const closePrevious = data[i - 1].close || data[i - 1][4];
+    const volume = data[i].volume || data[i][5];
+    if (isNaN(closeCurrent) || isNaN(closePrevious) || isNaN(volume)) continue;
+    const fi = (closeCurrent - closePrevious) * volume;
+    fiValues.push(fi);
+  }
+  return fiValues.length >= period ? TechnicalIndicators.EMA.calculate({ period, values: fiValues }).filter(v => !isNaN(v)) : [];
 }
 
 function calculateStochastic(data, periodK = 5, smoothK = 3, periodD = 3) {
@@ -272,8 +319,7 @@ async function fetchOpenInterest(symbol, timeframe, retries = 5) {
   const cached = getCachedData(cacheKey);
   if (cached) return cached;
   try {
-    logger.info(`Buscando Open Interest para ${symbol} no timeframe ${timeframe} com params={ limit: 30 }`);
-    const oiData = await withRetry(() => exchangeFutures.fetchOpenInterestHistory(symbol, timeframe, undefined, { limit: 30 }));
+    const oiData = await withRetry(() => exchangeFutures.fetchOpenInterestHistory(symbol, timeframe, undefined, 30));
     if (!oiData || oiData.length < 3) {
       logger.warn(`Dados insuficientes de Open Interest para ${symbol} no timeframe ${timeframe}: ${oiData?.length || 0} registros`);
       if (retries > 0) {
@@ -456,22 +502,24 @@ async function sendAlert1h2h(symbol, data) {
   const entryLow = format(price - 0.3 * atr);
   const entryHigh = format(price + 0.5 * atr);
   const isBuySignal = state.wprTriggerState[symbol]['1h_2h'].buyTriggered && 
-                      atrPercent >= config.ATR_PERCENT_MIN && 
-                      atrPercent <= config.ATR_PERCENT_MAX && 
-                      aggressiveDelta.isSignificant && 
-                      aggressiveDelta.isBuyPressure && 
+                      //(lsr.value === null || lsr.value < 2.5) && 
+                      //atrPercent >= config.ATR_PERCENT_MIN && 
+                      //atrPercent <= config.ATR_PERCENT_MAX && 
+                      //aggressiveDelta.isSignificant && 
+                      //aggressiveDelta.isBuyPressure && 
                       isOIRising5m && 
-                      oi15m.isRising &&
+                      //oi15m.isRising &&
                       ema13_3m > ema34_3m && 
                       previousEma13_3m <= previousEma34_3m;
   const isSellSignal = state.wprTriggerState[symbol]['1h_2h'].sellTriggered && 
-                      rsi1h > 68 && 
-                      atrPercent >= config.ATR_PERCENT_MIN && 
-                      atrPercent <= config.ATR_PERCENT_MAX && 
-                      aggressiveDelta.isSignificant && 
-                      !aggressiveDelta.isBuyPressure && 
+                      //rsi1h > 68 && 
+                      //(lsr.value === null || lsr.value >= 2.5) && 
+                      //atrPercent >= config.ATR_PERCENT_MIN && 
+                      //atrPercent <= config.ATR_PERCENT_MAX && 
+                      //aggressiveDelta.isSignificant && 
+                      //!aggressiveDelta.isBuyPressure && 
                       !isOIRising5m && 
-                      !oi15m.isRising &&
+                      //!oi15m.isRising &&
                       ema13_3m < ema34_3m && 
                       previousEma13_3m >= previousEma34_3m;
   const targets = isSellSignal
@@ -506,28 +554,21 @@ async function sendAlert1h2h(symbol, data) {
     : '🔘Neutro';
   const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol.replace('/', '')}&interval=15`;
   let wprResetText = '🔹 Liquidação: 🔘Nenhuma Recente';
-  if (state.ultimoWPRReset[symbol] && (agora - state.ultimoWPRReset[symbol].timestamp) < config.TEMPO_COOLDOWN_MS) {
-    const reset = state.ultimoWPRReset[symbol];
-  }
+  
+  
   let alertText = `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
     `💲 Preço: ${format(price)}\n` +
+    `${wprResetText}\n` +
     `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
     `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
     `🔹 Fund. R: ${fundingRateText}\n` +
     `🔸 Vol.Delta: ${deltaText}\n` +
     `🔹 Stoch Diário %K: ${estocasticoD ? estocasticoD.k.toFixed(2) : '--'} ${stochDEmoji} ${direcaoD}\n` +
     `🔹 Stoch 4H %K: ${estocastico4h ? estocastico4h.k.toFixed(2) : '--'} ${stoch4hEmoji} ${direcao4h}\n` +
-    `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
-    `🎯 Tps: ${targets}\n` +
-    `⛔ Stop: ${stop}\n` +
-    `   Liquid. Compra: ${buyZonesText}\n` +
-    `   Liquid. Venda: ${sellZonesText}\n` +
-    `   Poc Bull: ${buyZonesText}\n` +
-    `   Poc Bear: ${sellZonesText}\n` +
-    `☑︎Gerencie seu Risco 🤖 @J4Rviz\n`;
+    `☑︎ Monitor WPR 🤖 @J4Rviz\n`;
   if (isBuySignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢 Reversão WPR *\n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🟢*Reversão WPR -✳️Compra✳️*\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -539,7 +580,7 @@ async function sendAlert1h2h(symbol, data) {
     }
   } else if (isSellSignal) {
     try {
-      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴 Exaustão WPR *\n\n${alertText}`, {
+      await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, `🔴*Venda WPR -🔻Correção/Exaustão🔻*\n\n${alertText}`, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
@@ -556,7 +597,7 @@ async function checkConditions() {
   try {
     await limitConcurrency(config.PARES_MONITORADOS, async (symbol) => {
       const cacheKeyPrefix = `ohlcv_${symbol}`;
-      const ohlcv3mRawFutures = getCachedData(`${cacheKeyPrefix}_3m`) || await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '3m', undefined, Math.max(config.EMA_34_PERIOD + 1, config.EMA_13_PERIOD + 1)));
+      const ohlcv3mRawFutures = getCachedData(`${cacheKeyPrefix}_3m`) || await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '3m', undefined, Math.max(config.EMA_34_PERIOD + 1, config.EMA_89_PERIOD + 1)));
       const ohlcv15mRaw = getCachedData(`${cacheKeyPrefix}_15m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '15m', undefined, config.WPR_PERIOD + 1));
       const ohlcv1hRaw = getCachedData(`${cacheKeyPrefix}_1h`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '1h', undefined, config.WPR_PERIOD + 1));
       const ohlcv2hRaw = getCachedData(`${cacheKeyPrefix}_2h`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '2h', undefined, config.WPR_PERIOD + 1));
@@ -627,15 +668,69 @@ async function checkConditions() {
   }
 }
 
+// Função de reconexão
+async function reconectar() {
+  const maxTentativas = 5;
+  const delayBase = 5000; // 5 segundos
+  let isOnline = false;
+
+  while (!isOnline) {
+    for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+      try {
+        // Testar conectividade com uma chamada simples à API da Binance
+        await exchangeSpot.fetchTime();
+        logger.info('Conexão com a internet estabelecida.');
+        isOnline = true;
+        break;
+      } catch (e) {
+        logger.error(`Falha na conexão, tentativa ${tentativa}/${maxTentativas}: ${e.message}`);
+        if (tentativa === maxTentativas) {
+          logger.warn('Máximo de tentativas de reconexão atingido. Aguardando antes de novo ciclo...');
+          await new Promise(resolve => setTimeout(resolve, delayBase * 2));
+          break;
+        }
+        const delay = Math.pow(2, tentativa - 1) * delayBase;
+        logger.info(`Aguardando ${delay}ms antes da próxima tentativa de reconexão...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  return isOnline;
+}
+
 async function main() {
   logger.info('Iniciando scalp');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPR 2 💹Start...'));
+    // Verificar conexão inicial
+    await reconectar();
+    
+    // Enviar mensagem de inicialização
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium WPR 💹Start...'));
+    
+    // Iniciar verificação de condições
     await checkConditions();
-    setInterval(checkConditions, config.INTERVALO_ALERTA_3M_MS);
+    
+    // Configurar intervalo com verificação de conexão
+    setInterval(async () => {
+      try {
+        await reconectar();
+        await checkConditions();
+      } catch (e) {
+        logger.error(`Erro no ciclo de verificação: ${e.message}`);
+        logger.info('Tentando reconectar...');
+        await reconectar();
+      }
+    }, config.INTERVALO_ALERTA_3M_MS);
   } catch (e) {
     logger.error(`Erro ao iniciar bot: ${e.message}`);
+    logger.info('Tentando reconectar...');
+    await reconectar();
+    // Reiniciar o bot após reconexão
+    setTimeout(main, 5000);
   }
 }
 
-main().catch(e => logger.error(`Erro fatal: ${e.message}`));
+main().catch(e => {
+  logger.error(`Erro fatal: ${e.message}`);
+  setTimeout(main, 10000); // Tentar reiniciar após 10 segundos em caso de erro fatal
+});
