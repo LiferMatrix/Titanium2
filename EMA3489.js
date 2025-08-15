@@ -10,19 +10,19 @@ const config = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   PARES_MONITORADOS: (process.env.COINS || "BTCUSDT,ETHUSDT,BNBUSDT").split(","),
-  INTERVALO_ALERTA_4H_MS: 15 * 60 * 1000, // 15 minutos
+  INTERVALO_ALERTA_3M_MS: 5 * 60 * 1000, // 5 minutos
   TEMPO_COOLDOWN_MS: 30 * 60 * 1000, // 30 minutos
   RSI_PERIOD: 14,
-  FGV_BUY_MIN: 1.5, // Limite mínimo de FGV para compra (15m, %)
-  FGV_SELL_MAX: -1.5, // Limite máximo de FGV para venda (15m, %)
-  DELTA_BUY_MIN: 10, // Limite mínimo de Delta Agressivo para compra (%)
-  DELTA_SELL_MAX: -10, // Limite máximo de Delta Agressivo para venda (%)
+  LSR_BUY_MAX: 1.8, // Limite máximo de LSR para compra
+  LSR_SELL_MIN: 2.6, // Limite mínimo de LSR para venda
+  DELTA_BUY_MIN: 15, // Limite mínimo de Delta Agressivo para compra (%)
+  DELTA_SELL_MAX: -15, // Limite máximo de Delta Agressivo para venda (%)
   CACHE_TTL: 10 * 60 * 1000, // 10 minutos
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
-  VOLATILITY_MIN: 0.005, // Volatilidade mínima (ATR/preço ≥ 0.5%)
-  VOLUME_ANOMALY_THRESHOLD: 2.0, // Volume atual deve ser >= 2x a média
-  VOLUME_LOOKBACK_PERIOD: 20, // Período de lookback para calcular média do volume
+  VOLATILITY_MIN: 0.001, // Volatilidade mínima (ATR/preço ≥ 0.1%)
+  EMA_FAST: 34, // Período da EMA rápida
+  EMA_SLOW: 89, // Período da EMA lenta
 };
 
 // Logger
@@ -38,7 +38,6 @@ const logger = winston.createLogger({
 // Estado global
 const state = {
   ultimoAlertaPorAtivo: {},
-  ultimoFGV: {},
   dataCache: new Map()
 };
 
@@ -123,6 +122,11 @@ async function limitConcurrency(items, fn, limit = 5) {
   return results;
 }
 
+function getStochasticEmoji(value) {
+  if (!value) return "";
+  return value < 10 ? "🔵" : value < 25 ? "🟢" : value <= 55 ? "🟡" : value <= 70 ? "🟠" : value <= 80 ? "🔴" : "💥";
+}
+
 // ================= INDICADORES ================= //
 function normalizeOHLCV(data) {
   return data.map(c => ({
@@ -144,14 +148,27 @@ function calculateRSI(data) {
   return rsi.filter(v => !isNaN(v));
 }
 
-function calculateFGV(data) {
-  if (!data || data.length < 11) return null;
-  const closes = data.map(c => c.close || c[4]).filter(cl => !isNaN(cl));
-  if (closes.length < 11) return null;
-  const currentClose = closes[closes.length - 1];
-  const pastClose = closes[closes.length - 11]; // 10 candles atrás
-  const fgvPercent = ((currentClose - pastClose) / pastClose * 100).toFixed(2);
-  return parseFloat(fgvPercent);
+function calculateEMA(data, period) {
+  if (!data || data.length < period) return [];
+  const ema = TechnicalIndicators.EMA.calculate({
+    period: period,
+    values: data.map(d => d.close || d[4])
+  });
+  return ema.filter(v => !isNaN(v));
+}
+
+function calculateEMACrossover(data) {
+  if (!data || data.length < config.EMA_SLOW + 1) return { isBullish: false, isBearish: false };
+  const emaFast = calculateEMA(data, config.EMA_FAST);
+  const emaSlow = calculateEMA(data, config.EMA_SLOW);
+  if (emaFast.length < 2 || emaSlow.length < 2) return { isBullish: false, isBearish: false };
+  const currentFast = emaFast[emaFast.length - 1];
+  const previousFast = emaFast[emaFast.length - 2];
+  const currentSlow = emaSlow[emaSlow.length - 1];
+  const previousSlow = emaSlow[emaSlow.length - 2];
+  const isBullish = previousFast <= previousSlow && currentFast > currentSlow;
+  const isBearish = previousFast >= previousSlow && currentFast < currentSlow;
+  return { isBullish, isBearish, emaFast: currentFast, emaSlow: currentSlow };
 }
 
 function calculateATR(data) {
@@ -164,15 +181,6 @@ function calculateATR(data) {
   return atr.filter(v => !isNaN(v));
 }
 
-function calculateEMA(data, period) {
-  if (!data || data.length < period) return [];
-  const ema = TechnicalIndicators.EMA.calculate({
-    period,
-    values: data.map(d => d.close || d[4])
-  });
-  return ema.filter(v => !isNaN(v));
-}
-
 function calculateVolatility(data, price) {
   const atrValues = calculateATR(data);
   if (!atrValues.length || !price) return 0;
@@ -180,53 +188,20 @@ function calculateVolatility(data, price) {
   return (atr / price) || 0;
 }
 
-function calculateAbnormalVolume(ohlcv, lookbackPeriod, threshold) {
-  if (!ohlcv || ohlcv.length < lookbackPeriod + 1) return { isAbnormal: false, volumeRatio: 0 };
-  
-  const volumes = ohlcv.slice(-lookbackPeriod - 1, -1).map(c => c.volume || c[5]).filter(v => !isNaN(v));
-  if (volumes.length < lookbackPeriod) return { isAbnormal: false, volumeRatio: 0 };
-  
-  const currentVolume = ohlcv[ohlcv.length - 1].volume || ohlcv[ohlcv.length - 1][5];
-  if (isNaN(currentVolume)) return { isAbnormal: false, volumeRatio: 0 };
-  
-  const avgVolume = volumes.reduce((sum, vol) => sum + vol, 0) / volumes.length;
-  const volumeRatio = avgVolume !== 0 ? currentVolume / avgVolume : 0;
-  
-  return {
-    isAbnormal: volumeRatio >= threshold,
-    volumeRatio: volumeRatio.toFixed(2)
-  };
-}
-
 function detectarQuebraEstrutura(ohlcv) {
-  if (!ohlcv || ohlcv.length < 2) return { estruturaAlta: 0, estruturaBaixa: 0, buyLiquidityZones: [], sellLiquidityZones: [] };
+  if (!ohlcv || ohlcv.length < 2) return { estruturaAlta: 0, estruturaBaixa: 0 };
   const lookbackPeriod = 20;
   const previousCandles = ohlcv.slice(0, -1).slice(-lookbackPeriod);
   const highs = previousCandles.map(c => c.high || c[2]).filter(h => !isNaN(h));
   const lows = previousCandles.map(c => c.low || c[3]).filter(l => !isNaN(l));
-  const volumes = previousCandles.map(c => c.volume || c[5]).filter(v => !isNaN(v));
-  if (highs.length === 0 || lows.length === 0 || volumes.length === 0) {
-    return { estruturaAlta: 0, estruturaBaixa: 0, buyLiquidityZones: [], sellLiquidityZones: [] };
+  if (highs.length === 0 || lows.length === 0) {
+    return { estruturaAlta: 0, estruturaBaixa: 0 };
   }
   const maxHigh = Math.max(...highs);
   const minLow = Math.min(...lows);
-  const volumeThreshold = Math.max(...volumes) * 0.7;
-  const buyLiquidityZones = [];
-  const sellLiquidityZones = [];
-  previousCandles.forEach(candle => {
-    const high = candle.high || candle[2];
-    const low = candle.low || candle[3];
-    const volume = candle.volume || candle[5];
-    if (volume >= volumeThreshold && !isNaN(low) && !isNaN(high)) {
-      if (low <= minLow * 1.01) buyLiquidityZones.push(low);
-      if (high >= maxHigh * 0.99) sellLiquidityZones.push(high);
-    }
-  });
   return {
     estruturaAlta: maxHigh,
-    estruturaBaixa: minLow,
-    buyLiquidityZones: [...new Set(buyLiquidityZones)].sort((a, b) => b - a).slice(0, 3),
-    sellLiquidityZones: [...new Set(sellLiquidityZones)].sort((a, b) => a - b).slice(0, 3)
+    estruturaBaixa: minLow
   };
 }
 
@@ -249,6 +224,17 @@ function calculateVolumeProfile(ohlcv, priceStepPercent = 0.1) {
     buyLiquidityZones: sortedBuckets.filter(p => p <= ohlcv[ohlcv.length - 1].close).sort((a, b) => b - a),
     sellLiquidityZones: sortedBuckets.filter(p => p > ohlcv[ohlcv.length - 1].close).sort((a, b) => a - b)
   };
+}
+
+function detectAnomalousVolume(ohlcv) {
+  if (!ohlcv || ohlcv.length < 21) return false;
+  const lookbackPeriod = 20;
+  const previousCandles = ohlcv.slice(0, -1).slice(-lookbackPeriod);
+  const volumes = previousCandles.map(c => c.volume || c[5]).filter(v => !isNaN(v));
+  if (volumes.length === 0) return false;
+  const avgVolume = volumes.reduce((sum, vol) => sum + vol, 0) / volumes.length;
+  const currentVolume = ohlcv[ohlcv.length - 1].volume;
+  return currentVolume >= avgVolume * 2; // Volume 2x maior que a média é considerado anormal
 }
 
 async function fetchLiquidityZones(symbol) {
@@ -345,27 +331,9 @@ async function fetchOpenInterest(symbol, timeframe, retries = 5) {
       }
       return { isRising: false, percentChange: '0.00' };
     }
-    const oiValues = validOiData.map(d => d.openInterest).filter(v => v !== undefined);
-    const sortedOi = [...oiValues].sort((a, b) => a - b);
-    const median = sortedOi[Math.floor(sortedOi.length / 2)];
-    const filteredOiData = validOiData.filter(d => d.openInterest >= median * 0.5 && d.openInterest <= median * 1.5);
-    if (filteredOiData.length < 3) {
-      logger.warn(`Registros válidos após filtro de outliers insuficientes para ${symbol} no timeframe ${timeframe}: ${filteredOiData.length}`);
-      if (retries > 0) {
-        const delay = Math.pow(2, 5 - retries) * 1000;
-        logger.info(`Tentando novamente para ${symbol} no timeframe ${timeframe}, tentativas restantes: ${retries}, delay: ${delay}ms`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return await fetchOpenInterest(symbol, timeframe, retries - 1);
-      }
-      if (timeframe === '15m' || timeframe === '5m') {
-        logger.info(`Fallback para timeframe 30m para ${symbol}`);
-        return await fetchOpenInterest(symbol, '30m', 3);
-      }
-      return { isRising: false, percentChange: '0.00' };
-    }
-    const recentOi = filteredOiData.slice(0, 3).map(d => d.openInterest);
+    const recentOi = validOiData.slice(0, 3).map(d => d.openInterest);
     const sma = recentOi.reduce((sum, val) => sum + val, 0) / recentOi.length;
-    const previousRecentOi = filteredOiData.slice(3, 6).map(d => d.openInterest);
+    const previousRecentOi = validOiData.slice(3, 6).map(d => d.openInterest);
     const previousSma = previousRecentOi.length >= 3 ? previousRecentOi.reduce((sum, val) => sum + val, 0) / previousRecentOi.length : recentOi[recentOi.length - 1];
     const oiPercentChange = previousSma !== 0 ? ((sma - previousSma) / previousSma * 100).toFixed(2) : '0.00';
     const result = {
@@ -439,39 +407,86 @@ async function calculateAggressiveDelta(symbol, timeframe = '15m', limit = 100) 
 }
 
 // ================= FUNÇÕES DE ALERTAS ================= //
-function getFGVEmoji(value) {
-  if (!value) return "";
-  return value >= 3 ? "🔥" : value >= 1.5 ? "🟢" : value <= -3 ? "💥" : value <= -1.5 ? "🔴" : "🟡";
-}
-
 function getSetaDirecao(current, previous) {
   if (!current || !previous) return "➡️";
   return current > previous ? "⬆️" : current < previous ? "⬇️" : "➡️";
 }
 
-async function sendAlertFGV(symbol, data) {
-  const { ohlcv15m, ohlcv4h, ohlcv1h, ohlcvDiario, ohlcv3m, price, rsi1h, lsr, fundingRate, aggressiveDelta, fgv15m, oi5m, oi15m, atr, ema8_3m, ema21_3m } = data;
+async function sendAlertEMATrend(symbol, data) {
+  const { ohlcv3m, ohlcv1h, price, rsi1h, emaCrossover, lsr, fundingRate, aggressiveDelta, oi5m, oi15m, atr } = data;
   const agora = Date.now();
   if (!state.ultimoAlertaPorAtivo[symbol]) state.ultimoAlertaPorAtivo[symbol] = { historico: [] };
-  if (state.ultimoAlertaPorAtivo[symbol]['4h'] && agora - state.ultimoAlertaPorAtivo[symbol]['4h'] < config.TEMPO_COOLDOWN_MS) return;
+  if (state.ultimoAlertaPorAtivo[symbol]['3m'] && agora - state.ultimoAlertaPorAtivo[symbol]['3m'] < config.TEMPO_COOLDOWN_MS) {
+    logger.info(`Cooldown ativo para ${symbol}, último alerta: ${state.ultimoAlertaPorAtivo[symbol]['3m']}`);
+    return;
+  }
+
+  // Validar cruzamento EMA
+  if (!emaCrossover) {
+    logger.warn(`Cruzamento EMA 34/89 inválido para ${symbol}`);
+    return;
+  }
+
+  // Detectar condições de cruzamento
+  const isBullishCrossover = emaCrossover.isBullish;
+  const isBearishCrossover = emaCrossover.isBearish;
+
+  // Log para depuração
+  logger.info(`EMA 34/89 (3m) para ${symbol}: Bullish=${isBullishCrossover}, Bearish=${isBearishCrossover}, EMA34=${emaCrossover.emaFast}, EMA89=${emaCrossover.emaSlow}`);
 
   const precision = price < 1 ? 8 : price < 10 ? 6 : price < 100 ? 4 : 2;
   const format = v => isNaN(v) ? 'N/A' : v.toFixed(precision);
-  const zonas = detectarQuebraEstrutura(ohlcv15m);
-  const volumeProfile = calculateVolumeProfile(ohlcv15m);
+  const zonas = detectarQuebraEstrutura(ohlcv3m);
+  const volumeProfile = calculateVolumeProfile(ohlcv3m);
   const orderBookLiquidity = await fetchLiquidityZones(symbol);
-  const abnormalVolume = calculateAbnormalVolume(ohlcv3m, config.VOLUME_LOOKBACK_PERIOD, config.VOLUME_ANOMALY_THRESHOLD);
+  const isAnomalousVolume = detectAnomalousVolume(ohlcv3m);
 
-  const isNearBuyZone = zonas.buyLiquidityZones.some(zone => Math.abs(price - zone) <= atr * 0.01);
-  const isNearSellZone = zonas.sellLiquidityZones.some(zone => Math.abs(price - zone) <= atr * 0.01);
+  // Calcular Stochastic 5,3,3 para 4h e Diário
+  const cacheKey4h = `ohlcv_${symbol}_4h`;
+  const cacheKey1d = `ohlcv_${symbol}_1d`;
+  const ohlcv4hRaw = getCachedData(cacheKey4h) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '4h', undefined, 50));
+  const ohlcv1dRaw = getCachedData(cacheKey1d) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '1d', undefined, 50));
+  setCachedData(cacheKey4h, ohlcv4hRaw);
+  setCachedData(cacheKey1d, ohlcv1dRaw);
 
-  const volatility = calculateVolatility(ohlcv15m, price);
+  const ohlcv4h = normalizeOHLCV(ohlcv4hRaw);
+  const ohlcv1d = normalizeOHLCV(ohlcv1dRaw);
+
+  let stoch4h = 'N/A';
+  let stoch1d = 'N/A';
+  if (ohlcv4h.length >= 8) {
+    const stochResult4h = TechnicalIndicators.Stochastic.calculate({
+      high: ohlcv4h.map(c => c.high),
+      low: ohlcv4h.map(c => c.low),
+      close: ohlcv4h.map(c => c.close),
+      period: 5,
+      signalPeriod: 3,
+      kPeriod: 3
+    });
+    stoch4h = stochResult4h.length > 0 ? stochResult4h[stochResult4h.length - 1].k.toFixed(2) : 'N/A';
+  }
+  if (ohlcv1d.length >= 8) {
+    const stochResult1d = TechnicalIndicators.Stochastic.calculate({
+      high: ohlcv1d.map(c => c.high),
+      low: ohlcv1d.map(c => c.low),
+      close: ohlcv1d.map(c => c.close),
+      period: 5,
+      signalPeriod: 3,
+      kPeriod: 3
+    });
+    stoch1d = stochResult1d.length > 0 ? stochResult1d[stochResult1d.length - 1].k.toFixed(2) : 'N/A';
+  }
+
+  const isNearBuyZone = zonas.estruturaBaixa > 0 && Math.abs(price - zonas.estruturaBaixa) <= atr * 0.01;
+  const isNearSellZone = zonas.estruturaAlta > 0 && Math.abs(price - zonas.estruturaAlta) <= atr * 0.01;
+
+  const volatility = calculateVolatility(ohlcv3m, price);
   if (volatility < config.VOLATILITY_MIN) {
     logger.info(`Volatilidade insuficiente para ${symbol}: ${volatility.toFixed(4)} < ${config.VOLATILITY_MIN}`);
     return;
   }
 
-  const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol.replace('/', '')}&interval=15`;
+  const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol.replace('/', '')}&interval=3`;
   const rsi1hEmoji = rsi1h > 60 ? "☑︎" : rsi1h < 40 ? "☑︎" : "";
   let lsrSymbol = '🔘Consol.';
   if (lsr.value !== null) {
@@ -496,17 +511,11 @@ async function sendAlertFGV(symbol, data) {
     : '🔘Neutro';
   const oi5mText = oi5m ? `${oi5m.isRising ? '📈' : '📉'} OI 5m: ${oi5m.percentChange}%` : '🔹 Indisp.';
   const oi15mText = oi15m ? `${oi15m.isRising ? '📈' : '📉'} OI 15m: ${oi15m.percentChange}%` : '🔹 Indisp.';
-  const emaText = ema8_3m && ema21_3m ? `${ema8_3m > ema21_3m ? '🟢 EMA 8 > 21 (3m)' : '🔴 EMA 8 < 21 (3m)'}` : '🔹 EMA Indisp.';
-  const volumeText = abnormalVolume.isAbnormal ? `📊 Vol. 3m: ${abnormalVolume.volumeRatio}x` : '🔘 Vol. Normal';
+  const emaCrossoverText = isBullishCrossover ? `EMA 34/89 (3m): Bullish 🟢` : isBearishCrossover ? `EMA 34/89 (3m): Bearish 🔴` : `EMA 34/89 (3m): Neutro`;
+  const stoch4hText = stoch4h !== 'N/A' ? `Stoch 4h: ${stoch4h} ${getStochasticEmoji(parseFloat(stoch4h))}` : '🔹 Stoch 4h';
+  const stoch1dText = stoch1d !== 'N/A' ? `Stoch 1d: ${stoch4h} ${getStochasticEmoji(parseFloat(stoch1d))}` : '🔹 Stoch 1d';
+  const volumeText = isAnomalousVolume ? `Vol. Anormal 3m: ✅ Confirmado` : `Vol. Anormal 3m: ❌ Não `;
 
-  if (!state.ultimoFGV[symbol]) state.ultimoFGV[symbol] = {};
-  const fgvAnterior15m = state.ultimoFGV[symbol].fgv15m || fgv15m || 0;
-  state.ultimoFGV[symbol].fgv15m = fgv15m;
-  const direcaoFGV = getSetaDirecao(fgv15m, fgvAnterior15m);
-  const fgvEmoji = fgv15m ? getFGVEmoji(fgv15m) : "";
-
-  const buyZonesText = zonas.buyLiquidityZones.map(format).join(' / ') || 'N/A';
-  const sellZonesText = zonas.sellLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpBuyZonesText = volumeProfile.buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = volumeProfile.sellLiquidityZones.map(format).join(' / ') || 'N/A';
   const obBuyZonesText = orderBookLiquidity.buyLiquidityZones.map(format).join(' / ') || 'N/A';
@@ -514,85 +523,98 @@ async function sendAlertFGV(symbol, data) {
 
   const entryLow = format(price - 0.3 * atr);
   const entryHigh = format(price + 0.5 * atr);
-  const targetsBuy = [1.5, 3, 4.5, 6].map(mult => format(price + mult * atr)).join(" / ");
-  const targetsSell = [1.5, 3, 4.5, 6].map(mult => format(price - mult * atr)).join(" / ");
+  const targetsBuy = [1, 2, 3].map(mult => format(price + mult * atr)).join(" / ");
+  const targetsSell = [1, 2, 3].map(mult => format(price - mult * atr)).join(" / ");
   const stopBuy = format(price - 3.5 * atr);
   const stopSell = format(price + 3.5 * atr);
 
   let alertText = '';
-  // Condições para compra: FGV 15m ≥ 1.5%, RSI 1h < 60, OI 5m e 15m subindo, Delta ≥ 10%, EMA 8 > EMA 21 (3m), Volatilidade ≥ 0.5%, Volume Anormal
-  const isBuySignal = fgv15m >= config.FGV_BUY_MIN &&
+  // Condições para compra: OI 5m subindo, EMA 34 cruza acima da EMA 89 (3m), RSI 1h < 60, LSR < 1.8, Delta >= 15%, Volatilidade >= 0.1%
+  const isBuySignal = oi5m.isRising &&
+                      //oi15m.isRising &&
+                      isBullishCrossover &&
                       rsi1h < 60 && 
-                      oi5m.isRising &&
-                      oi15m.isRising && 
+                      (lsr.value === null || lsr.value < config.LSR_BUY_MAX) &&
                       aggressiveDelta.deltaPercent >= config.DELTA_BUY_MIN &&
-                      ema8_3m > ema21_3m &&
-                      volatility >= config.VOLATILITY_MIN &&
-                      abnormalVolume.isAbnormal;
+                      volatility >= config.VOLATILITY_MIN;
   
-  // Condições para venda: FGV 15m ≤ -1.5%, RSI 1h > 68, OI 5m e 15m caindo, Delta ≤ -10%, EMA 8 < EMA 21 (3m), Volatilidade ≥ 0.5%, Volume Anormal
-  const isSellSignal = fgv15m <= config.FGV_SELL_MAX &&
-                       rsi1h > 68 && 
-                       !oi5m.isRising &&
-                       !oi15m.isRising && 
+  // Condições para venda: OI 5m caindo, EMA 34 cruza abaixo da EMA 89 (3m), RSI 1h > 60, LSR > 2.8, Delta <= -15%, Volatilidade >= 0.1%
+  const isSellSignal = !oi5m.isRising &&
+                       //!oi15m.isRising &&
+                       isBearishCrossover &&
+                       rsi1h > 60 && 
+                       (lsr.value === null || lsr.value > config.LSR_SELL_MIN) &&
                        aggressiveDelta.deltaPercent <= config.DELTA_SELL_MAX &&
-                       ema8_3m < ema21_3m &&
-                       volatility >= config.VOLATILITY_MIN &&
-                       abnormalVolume.isAbnormal;
+                       volatility >= config.VOLATILITY_MIN;
+
+  // Log das condições
+  logger.info(`Condições para ${symbol}: BuySignal=${isBuySignal}, SellSignal=${isSellSignal}, EMA34/89(3m)=${isBullishCrossover ? 'Bullish' : isBearishCrossover ? 'Bearish' : 'Neutro'}, RSI1h=${rsi1h}, OI5m=${oi5m.isRising}, OI15m=${oi15m.isRising}, LSR=${lsr.value}, Delta=${aggressiveDelta.deltaPercent}, Volatility=${volatility.toFixed(4)}, AnomalousVolume=${isAnomalousVolume}`);
 
   if (isBuySignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
       r.direcao === 'buy' && (agora - r.timestamp) < config.TEMPO_COOLDOWN_MS
     );
     if (!foiAlertado) {
-      alertText = `💠*FGV 15m - 📊Bull Detectado *\n\n` +
-                  `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
+      alertText = `🟢*Compra *\n\n` +
+                  `🔹Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
+                  `🔹 ${emaCrossoverText}\n` +
+                  `🔹 ${stoch4hText}\n` +
+                  `🔹 ${stoch1dText}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
                   `🔹 Fund. R: ${fundingRateText}\n` +
                   `🔸 Vol.Delta: ${deltaText}\n` +
-                  `🔹 FGV 15m: ${fgv15m ? fgv15m.toFixed(2) : '--'}% ${fgvEmoji} ${direcaoFGV}\n` +
                   `🔹 ${oi5mText}\n` +
                   `🔹 ${oi15mText}\n` +
-                  `🔹 ${emaText}\n` +
                   `🔹 ${volumeText}\n` +
+                  `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
+                  `🎯 Tps: ${targetsBuy}\n` +
+                  `⛔ Stop: ${stopBuy}\n` +
+                  `❅────✧❅🔹❅✧────❅ \n` +
+                  `🔹Estrutura: \n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
-                  ` ☑︎ Monitor -🤖 @J4Rviz\n`;
-      state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
+                  ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
+      state.ultimoAlertaPorAtivo[symbol]['3m'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'buy', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, FGV 15m=${fgv15m}%, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearBuyZone=${isNearBuyZone}, EMA8_3m=${ema8_3m}, EMA21_3m=${ema21_3m}, Volatility=${volatility.toFixed(4)}, VolumeRatio=${abnormalVolume.volumeRatio}x`);
+      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, EMA 34/89(3m)=Bullish, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearBuyZone=${isNearBuyZone}, Volatility=${volatility.toFixed(4)}, AnomalousVolume=${isAnomalousVolume}`);
     }
   } else if (isSellSignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
       r.direcao === 'sell' && (agora - r.timestamp) < config.TEMPO_COOLDOWN_MS
     );
     if (!foiAlertado) {
-      alertText = `🔻*FGV 15m - 📊Bear Detectado*\n\n` +
-                  `🔹 Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
+      alertText = `🔴*Correção *\n\n` +
+                  `🔹Ativo: <<*${symbol}*>> [- TradingView](${tradingViewLink})\n` +
                   `💲 Preço: ${format(price)}\n` +
                   `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
+                  `🔹 ${emaCrossoverText}\n` +
+                  `🔹 ${stoch4hText}\n` +
+                  `🔹 ${stoch1dText}\n` +
                   `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
                   `🔹 Fund. R: ${fundingRateText}\n` +
                   `🔸 Vol.Delta: ${deltaText}\n` +
-                  `🔹 FGV 15m: ${fgv15m ? fgv15m.toFixed(2) : '--'}% ${fgvEmoji} ${direcaoFGV}\n` +
                   `🔹 ${oi5mText}\n` +
                   `🔹 ${oi15mText}\n` +
-                  `🔹 ${emaText}\n` +
                   `🔹 ${volumeText}\n` +
+                  `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
+                  `🎯 Tps: ${targetsSell}\n` +
+                  `⛔ Stop: ${stopSell}\n` +
+                  `❅────✧❅🔹❅✧────❅ \n` +
+                  `🔹Estrutura: \n` +
                   `   Romp. de Baixa: ${format(zonas.estruturaBaixa)}\n` +
                   `   Romp. de Alta: ${format(zonas.estruturaAlta)}\n` +
                   `   Poc Bull: ${vpBuyZonesText}\n` +
                   `   Poc Bear: ${vpSellZonesText}\n` +
-                  ` ☑︎ Monitor -🤖 @J4Rviz\n`;
-      state.ultimoAlertaPorAtivo[symbol]['4h'] = agora;
+                  ` ☑︎ Gerencie seu Risco -🤖 @J4Rviz\n`;
+      state.ultimoAlertaPorAtivo[symbol]['3m'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'sell', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, FGV 15m=${fgv15m}%, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearSellZone=${isNearSellZone}, EMA8_3m=${ema8_3m}, EMA21_3m=${ema21_3m}, Volatility=${volatility.toFixed(4)}, VolumeRatio=${abnormalVolume.volumeRatio}x`);
+      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, EMA 34/89(3m)=Bearish, RSI 1h=${rsi1h.toFixed(2)}, OI 5m=${oi5m.percentChange}%, OI 15m=${oi15m.percentChange}%, LSR=${lsr.value ? lsr.value.toFixed(2) : 'N/A'}, Delta=${aggressiveDelta.deltaPercent}%, NearSellZone=${isNearSellZone}, Volatility=${volatility.toFixed(4)}, AnomalousVolume=${isAnomalousVolume}`);
     }
   }
 
@@ -602,7 +624,7 @@ async function sendAlertFGV(symbol, data) {
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
-      logger.info(`Alerta de sinal FGV enviado para ${symbol}: ${alertText}`);
+      logger.info(`Alerta de sinal OI-EMA enviado para ${symbol}: ${alertText}`);
     } catch (e) {
       logger.error(`Erro ao enviar alerta para ${symbol}: ${e.message}`);
     }
@@ -613,68 +635,61 @@ async function checkConditions() {
   try {
     await limitConcurrency(config.PARES_MONITORADOS, async (symbol) => {
       const cacheKeyPrefix = `ohlcv_${symbol}`;
-      const ohlcv15mRaw = getCachedData(`${cacheKeyPrefix}_15m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '15m', undefined, 50));
-      const ohlcv4hRaw = getCachedData(`${cacheKeyPrefix}_4h`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '4h', undefined, 20));
+      const ohlcv3mRaw = getCachedData(`${cacheKeyPrefix}_3m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '3m', undefined, config.EMA_SLOW + 1));
       const ohlcv1hRaw = getCachedData(`${cacheKeyPrefix}_1h`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '1h', undefined, config.RSI_PERIOD + 1));
-      const ohlcvDiarioRaw = getCachedData(`${cacheKeyPrefix}_1d`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '1d', undefined, 20));
-      const ohlcv3mRaw = getCachedData(`${cacheKeyPrefix}_3m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '3m', undefined, config.VOLUME_LOOKBACK_PERIOD + 1));
-      setCachedData(`${cacheKeyPrefix}_15m`, ohlcv15mRaw);
-      setCachedData(`${cacheKeyPrefix}_4h`, ohlcv4hRaw);
-      setCachedData(`${cacheKeyPrefix}_1h`, ohlcv1hRaw);
-      setCachedData(`${cacheKeyPrefix}_1d`, ohlcvDiarioRaw);
       setCachedData(`${cacheKeyPrefix}_3m`, ohlcv3mRaw);
+      setCachedData(`${cacheKeyPrefix}_1h`, ohlcv1hRaw);
 
-      if (!ohlcv15mRaw || !ohlcv4hRaw || !ohlcv1hRaw || !ohlcvDiarioRaw || !ohlcv3mRaw) {
+      if (!ohlcv3mRaw || !ohlcv1hRaw) {
         logger.warn(`Dados OHLCV insuficientes para ${symbol}, pulando...`);
         return;
       }
 
-      const ohlcv15m = normalizeOHLCV(ohlcv15mRaw);
-      const ohlcv4h = normalizeOHLCV(ohlcv4hRaw);
-      const ohlcv1h = normalizeOHLCV(ohlcv1hRaw);
-      const ohlcvDiario = normalizeOHLCV(ohlcvDiarioRaw);
       const ohlcv3m = normalizeOHLCV(ohlcv3mRaw);
-      const closes15m = ohlcv15m.map(c => c.close).filter(c => !isNaN(c));
-      const currentPrice = closes15m[closes15m.length - 1];
+      const ohlcv1h = normalizeOHLCV(ohlcv1hRaw);
+      const closes3m = ohlcv3m.map(c => c.close).filter(c => !isNaN(c));
+      const currentPrice = closes3m[closes3m.length - 1];
 
       if (isNaN(currentPrice)) {
         logger.warn(`Preço atual inválido para ${symbol}, pulando...`);
         return;
       }
 
+      // Validar número de candles para EMA
+      if (ohlcv3m.length < config.EMA_SLOW + 1) {
+        logger.warn(`Candles insuficientes para EMA 34/89 (3m) em ${symbol}: ${ohlcv3m.length}`);
+        return;
+      }
+
       const rsi1hValues = calculateRSI(ohlcv1h);
-      const fgv15m = calculateFGV(ohlcv15m);
+      const emaCrossover = calculateEMACrossover(ohlcv3m);
       const oi5m = await fetchOpenInterest(symbol, '5m');
       const oi15m = await fetchOpenInterest(symbol, '15m');
       const lsr = await fetchLSR(symbol);
       const fundingRate = await fetchFundingRate(symbol);
       const aggressiveDelta = await calculateAggressiveDelta(symbol);
-      const atrValues = calculateATR(ohlcv15m);
-      const ema8_3mValues = calculateEMA(ohlcv3m, 8);
-      const ema21_3mValues = calculateEMA(ohlcv3m, 21);
+      const atrValues = calculateATR(ohlcv3m);
 
-      if (!rsi1hValues.length || fgv15m === null || !atrValues.length || !ema8_3mValues.length || !ema21_3mValues.length) {
+      if (!rsi1hValues.length || !emaCrossover || !atrValues.length) {
         logger.warn(`Indicadores insuficientes para ${symbol}, pulando...`);
         return;
       }
 
-      await sendAlertFGV(symbol, {
-        ohlcv15m,
-        ohlcv4h,
-        ohlcv1h,
-        ohlcvDiario,
+      // Log dos últimos 5 candles para depuração
+      logger.info(`Últimos 5 candles 3m para ${symbol}: ${JSON.stringify(ohlcv3m.slice(-5))}`);
+
+      await sendAlertEMATrend(symbol, {
         ohlcv3m,
+        ohlcv1h,
         price: currentPrice,
         rsi1h: rsi1hValues[rsi1hValues.length - 1],
+        emaCrossover,
         lsr,
         fundingRate,
         aggressiveDelta,
-        fgv15m,
         oi5m,
         oi15m,
-        atr: atrValues[atrValues.length - 1],
-        ema8_3m: ema8_3mValues[ema8_3mValues.length - 1],
-        ema21_3m: ema21_3mValues[ema21_3mValues.length - 1]
+        atr: atrValues[atrValues.length - 1]
       });
     }, 5);
   } catch (e) {
@@ -685,9 +700,9 @@ async function checkConditions() {
 async function main() {
   logger.info('Iniciando simple trading bot');
   try {
-    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium FGV  💹Start...'));
+    await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium 💹Start...'));
     await checkConditions();
-    setInterval(checkConditions, config.INTERVALO_ALERTA_4H_MS);
+    setInterval(checkConditions, config.INTERVALO_ALERTA_3M_MS);
   } catch (e) {
     logger.error(`Erro ao iniciar bot: ${e.message}`);
   }
