@@ -580,7 +580,7 @@ async function sendAlertEMATrend(symbol, data) {
   const isBuySignal = oi5m.isRising &&
                       isBullishCrossover &&
                       rsi1h < 60 && 
-                      (lsr.value === null || lsr.value < config.LSR_BUY_MAX) &&
+                      //(lsr.value === null || lsr.value < config.LSR_BUY_MAX) &&
                       aggressiveDelta.deltaPercent >= config.DELTA_BUY_MIN &&
                       volatility >= config.VOLATILITY_MIN;
   
@@ -588,7 +588,7 @@ async function sendAlertEMATrend(symbol, data) {
   const isSellSignal = !oi5m.isRising &&
                        isBearishCrossover &&
                        rsi1h > 60 && 
-                       (lsr.value === null || lsr.value > config.LSR_SELL_MIN) &&
+                       //(lsr.value === null || lsr.value > config.LSR_SELL_MIN) &&
                        aggressiveDelta.deltaPercent <= config.DELTA_SELL_MAX &&
                        volatility >= config.VOLATILITY_MIN;
 
