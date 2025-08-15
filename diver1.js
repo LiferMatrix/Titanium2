@@ -128,29 +128,91 @@ function normalizeOHLCV(data) {
 }
 
 function calculateRSI(data) {
-  if (!data || data.length < config.RSI_PERIOD + 1) return [];
+  if (!data || data.length < config.RSI_PERIOD + 1) {
+    logger.warn(`Dados insuficientes para calcular RSI: ${data?.length} candles disponíveis, requer ${config.RSI_PERIOD + 1}`);
+    return [];
+  }
+  const closes = data.map(d => d.close || d[4]).filter(c => !isNaN(c));
+  logger.info(`Calculando RSI com ${closes.length} preços de fechamento: ${closes.slice(-5)}`);
   const rsi = TechnicalIndicators.RSI.calculate({
     period: config.RSI_PERIOD,
-    values: data.map(d => d.close || d[4])
+    values: closes
   });
+  logger.info(`RSI calculado: ${rsi.length} valores - ${rsi.slice(-5)}`);
   return rsi.filter(v => !isNaN(v));
 }
 
 function detectRSIDivergence(ohlcv, rsiValues) {
-  if (!ohlcv || !rsiValues || ohlcv.length < 3 || rsiValues.length < 3) {
+  if (!ohlcv || !rsiValues || ohlcv.length < 5 || rsiValues.length < 3) {
+    logger.warn(`Dados insuficientes para detectar divergência: OHLCV=${ohlcv?.length}, RSI=${rsiValues?.length}`);
     return { isBullish: false, isBearish: false };
   }
 
-  const lastCandle = ohlcv[ohlcv.length - 1];
-  const secondLastCandle = ohlcv[ohlcv.length - 2];
-  const lastRSI = rsiValues[rsiValues.length - 1];
-  const secondLastRSI = rsiValues[rsiValues.length - 2];
+  // Função auxiliar para encontrar topos e fundos
+  function findPeaksAndTroughs(data, isPrice = false) {
+    const peaks = [];
+    const troughs = [];
+    for (let i = 1; i < data.length - 1; i++) {
+      const value = isPrice ? (data[i].high || data[i][2]) : data[i];
+      const prevValue = isPrice ? (data[i - 1].high || data[i - 1][2]) : data[i - 1];
+      const nextValue = isPrice ? (data[i + 1].high || data[i + 1][2]) : data[i + 1];
+      if (value > prevValue && value > nextValue) {
+        peaks.push({ index: i, value });
+      }
+      const lowValue = isPrice ? (data[i].low || data[i][3]) : data[i];
+      const prevLow = isPrice ? (data[i - 1].low || data[i - 1][3]) : data[i - 1];
+      const nextLow = isPrice ? (data[i + 1].low || data[i + 1][3]) : data[i + 1];
+      if (lowValue < prevLow && lowValue < nextLow) {
+        troughs.push({ index: i, value: lowValue });
+      }
+    }
+    logger.info(`Peaks e troughs encontrados: Peaks=${peaks.length}, Troughs=${troughs.length}`);
+    return { peaks, troughs };
+  }
 
-  // Detectar baixa mais baixa no preço e alta mais alta no RSI (divergência de alta)
-  const isBullish = secondLastCandle.low > lastCandle.low && secondLastRSI < lastRSI;
+  const priceData = ohlcv.slice(-10); // Últimos 10 candles para análise
+  const rsiData = rsiValues.slice(-10); // Últimos 10 valores de RSI
+  const pricePeaksTroughs = findPeaksAndTroughs(priceData, true);
+  const rsiPeaksTroughs = findPeaksAndTroughs(rsiData, false);
 
-  // Detectar alta mais alta no preço e baixa mais baixa no RSI (divergência de baixa)
-  const isBearish = secondLastCandle.high < lastCandle.high && secondLastRSI > lastRSI;
+  let isBullish = false;
+  let isBearish = false;
+
+  // Divergência de alta: Baixa mais baixa no preço, alta mais alta no RSI
+  if (pricePeaksTroughs.troughs.length >= 2 && rsiPeaksTroughs.peaks.length >= 2) {
+    const lastTrough = pricePeaksTroughs.troughs[pricePeaksTroughs.troughs.length - 1];
+    const secondLastTrough = pricePeaksTroughs.troughs[pricePeaksTroughs.troughs.length - 2];
+    const lastRsiPeak = rsiPeaksTroughs.peaks[rsiPeaksTroughs.peaks.length - 1];
+    const secondLastRsiPeak = rsiPeaksTroughs.peaks[rsiPeaksTroughs.peaks.length - 2];
+
+    if (
+      lastTrough.value < secondLastTrough.value &&
+      lastRsiPeak.value > secondLastRsiPeak.value &&
+      Math.abs(lastTrough.index - lastRsiPeak.index) <= 2 &&
+      lastRsiPeak.value < 40 // RSI em zona de sobrevenda ou próximo
+    ) {
+      isBullish = true;
+      logger.info(`Divergência de alta detectada: Preço=${lastTrough.value} < ${secondLastTrough.value}, RSI=${lastRsiPeak.value} > ${secondLastRsiPeak.value}`);
+    }
+  }
+
+  // Divergência de baixa: Alta mais alta no preço, baixa mais baixa no RSI
+  if (pricePeaksTroughs.peaks.length >= 2 && rsiPeaksTroughs.troughs.length >= 2) {
+    const lastPeak = pricePeaksTroughs.peaks[pricePeaksTroughs.peaks.length - 1];
+    const secondLastPeak = pricePeaksTroughs.peaks[pricePeaksTroughs.peaks.length - 2];
+    const lastRsiTrough = rsiPeaksTroughs.troughs[rsiPeaksTroughs.troughs.length - 1];
+    const secondLastRsiTrough = rsiPeaksTroughs.troughs[rsiPeaksTroughs.troughs.length - 2];
+
+    if (
+      lastPeak.value > secondLastPeak.value &&
+      lastRsiTrough.value < secondLastRsiTrough.value &&
+      Math.abs(lastPeak.index - lastRsiTrough.index) <= 2 &&
+      lastRsiTrough.value > 60 // RSI em zona de sobrecompra ou próximo
+    ) {
+      isBearish = true;
+      logger.info(`Divergência de baixa detectada: Preço=${lastPeak.value} > ${secondLastPeak.value}, RSI=${lastRsiTrough.value} < ${secondLastRsiTrough.value}`);
+    }
+  }
 
   return { isBullish, isBearish };
 }
@@ -210,7 +272,7 @@ function calculateVolumeProfile(ohlcv, priceStepPercent = 0.1) {
   };
 }
 
-function detectAnomalousVolume(ohlcv) {
+function detectAnomalousVolume(ohlcv, timeframe = '15m') {
   if (!ohlcv || ohlcv.length < 21) return false;
   const lookbackPeriod = 20;
   const previousCandles = ohlcv.slice(0, -1).slice(-lookbackPeriod);
@@ -218,6 +280,7 @@ function detectAnomalousVolume(ohlcv) {
   if (volumes.length === 0) return false;
   const avgVolume = volumes.reduce((sum, vol) => sum + vol, 0) / volumes.length;
   const currentVolume = ohlcv[ohlcv.length - 1].volume;
+  logger.info(`Detectando volume anômalo para ${timeframe}: Current=${currentVolume}, Avg=${avgVolume}, Threshold=${avgVolume * 2}`);
   return currentVolume >= avgVolume * 2;
 }
 
@@ -419,7 +482,8 @@ function getSetaDirecao(current, previous) {
 }
 
 async function sendAlertRSIDivergence(symbol, data) {
-  const { ohlcv15m, price, rsi15m, rsiDivergence, lsr, fundingRate, aggressiveDelta, oi5m, oi15m, atr } = data;
+  logger.info(`Chamando sendAlertRSIDivergence para ${symbol}: RSI Divergence=${JSON.stringify(data.rsiDivergence)}`);
+  const { ohlcv15m, ohlcv3m, price, rsi15m, rsiDivergence, lsr, fundingRate, aggressiveDelta, oi5m, oi15m, atr } = data;
   const agora = Date.now();
   if (!state.ultimoAlertaPorAtivo[symbol]) state.ultimoAlertaPorAtivo[symbol] = { historico: [] };
   if (state.ultimoAlertaPorAtivo[symbol]['15m'] && agora - state.ultimoAlertaPorAtivo[symbol]['15m'] < config.TEMPO_COOLDOWN_MS) {
@@ -442,7 +506,8 @@ async function sendAlertRSIDivergence(symbol, data) {
   const zonas = detectarQuebraEstrutura(ohlcv15m);
   const volumeProfile = calculateVolumeProfile(ohlcv15m);
   const orderBookLiquidity = await fetchLiquidityZones(symbol);
-  const isAnomalousVolume = detectAnomalousVolume(ohlcv15m);
+  const isAnomalousVolume15m = detectAnomalousVolume(ohlcv15m, '15m');
+  const isAnomalousVolume3m = detectAnomalousVolume(ohlcv3m, '3m');
 
   const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol.replace('/', '')}&interval=15`;
   const rsi15mEmoji = rsi15m > 60 ? "☑︎" : rsi15m < 40 ? "☑︎" : "";
@@ -470,7 +535,8 @@ async function sendAlertRSIDivergence(symbol, data) {
   const oi5mText = oi5m ? `${oi5m.isRising ? '📈' : '📉'} OI 5m: ${oi5m.percentChange}%` : '🔹 Indisp.';
   const oi15mText = oi15m ? `${oi15m.isRising ? '📈' : '📉'} OI 15m: ${oi15m.percentChange}%` : '🔹 Indisp.';
   const rsiDivergenceText = isBullishDivergence ? `RSI Divergence (15m): Bullish 🟢` : isBearishDivergence ? `RSI Divergence (15m): Bearish 🔴` : `RSI Divergence (15m): Neutro`;
-  const volumeText = isAnomalousVolume ? `Vol. Anormal 15m: ✅ Confirmado` : `Vol. Anormal 15m: ❌ Não `;
+  const volumeText15m = isAnomalousVolume15m ? `Vol. Anormal 15m: ✅ Confirmado` : `Vol. Anormal 15m: ❌ Não `;
+  const volumeText3m = isAnomalousVolume3m ? `Vol. Anormal 3m: ✅ Confirmado` : `Vol. Anormal 3m: ❌ Não `;
 
   const vpBuyZonesText = volumeProfile.buyLiquidityZones.map(format).join(' / ') || 'N/A';
   const vpSellZonesText = volumeProfile.sellLiquidityZones.map(format).join(' / ') || 'N/A';
@@ -490,13 +556,13 @@ async function sendAlertRSIDivergence(symbol, data) {
   const stopSell = format(price + 3.5 * atr);
 
   let alertText = '';
-  // Condições para compra: Apenas divergência de alta RSI (15m)
-  const isBuySignal = isBullishDivergence;
+  // Condições para compra: Divergência de alta RSI (15m) e volume anômalo no 3m
+  const isBuySignal = isBullishDivergence && isAnomalousVolume3m;
   
-  // Condições para venda: Apenas divergência de baixa RSI (15m)
-  const isSellSignal = isBearishDivergence;
+  // Condições para venda: Divergência de baixa RSI (15m) e volume anômalo no 3m
+  const isSellSignal = isBearishDivergence && isAnomalousVolume3m;
 
-  logger.info(`Condições para ${symbol}: BuySignal=${isBuySignal}, SellSignal=${isSellSignal}, RSI Divergence(15m)=${isBullishDivergence ? 'Bullish' : isBearishDivergence ? 'Bearish' : 'Neutro'}, RSI15m=${rsi15m}`);
+  logger.info(`Condições para ${symbol}: BuySignal=${isBuySignal}, SellSignal=${isSellSignal}, RSI Divergence(15m)=${isBullishDivergence ? 'Bullish' : isBearishDivergence ? 'Bearish' : 'Neutro'}, RSI15m=${rsi15m}, AnomalousVolume3m=${isAnomalousVolume3m}`);
 
   if (isBuySignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
@@ -513,7 +579,8 @@ async function sendAlertRSIDivergence(symbol, data) {
                   `🔸 Vol.Delta: ${deltaText}\n` +
                   `🔹 ${oi5mText}\n` +
                   `🔹 ${oi15mText}\n` +
-                  `🔹 ${volumeText}\n` +
+                  `🔹 ${volumeText15m}\n` +
+                  `🔹 ${volumeText3m}\n` +
                   `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
                   `🎯 Tps: ${targetsBuy}\n` +
                   `⛔ Stop: ${stopBuy}\n` +
@@ -530,7 +597,7 @@ async function sendAlertRSIDivergence(symbol, data) {
       state.ultimoAlertaPorAtivo[symbol]['15m'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'buy', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, RSI Divergence(15m)=Bullish, RSI 15m=${rsi15m.toFixed(2)}`);
+      logger.info(`Sinal de compra detectado para ${symbol}: Preço=${format(price)}, RSI Divergence(15m)=Bullish, RSI 15m=${rsi15m.toFixed(2)}, AnomalousVolume3m=${isAnomalousVolume3m}`);
     }
   } else if (isSellSignal) {
     const foiAlertado = state.ultimoAlertaPorAtivo[symbol].historico.some(r => 
@@ -547,7 +614,8 @@ async function sendAlertRSIDivergence(symbol, data) {
                   `🔸 Vol.Delta: ${deltaText}\n` +
                   `🔹 ${oi5mText}\n` +
                   `🔹 ${oi15mText}\n` +
-                  `🔹 ${volumeText}\n` +
+                  `🔹 ${volumeText15m}\n` +
+                  `🔹 ${volumeText3m}\n` +
                   `🔹 Entr.: ${entryLow}...${entryHigh}\n` +
                   `🎯 Tps: ${targetsSell}\n` +
                   `⛔ Stop: ${stopSell}\n` +
@@ -564,7 +632,7 @@ async function sendAlertRSIDivergence(symbol, data) {
       state.ultimoAlertaPorAtivo[symbol]['15m'] = agora;
       state.ultimoAlertaPorAtivo[symbol].historico.push({ direcao: 'sell', timestamp: agora });
       state.ultimoAlertaPorAtivo[symbol].historico = state.ultimoAlertaPorAtivo[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, RSI Divergence(15m)=Bearish, RSI 15m=${rsi15m.toFixed(2)}`);
+      logger.info(`Sinal de venda detectado para ${symbol}: Preço=${format(price)}, RSI Divergence(15m)=Bearish, RSI 15m=${rsi15m.toFixed(2)}, AnomalousVolume3m=${isAnomalousVolume3m}`);
     }
   }
 
@@ -585,13 +653,15 @@ async function checkConditions() {
   try {
     await limitConcurrency(config.PARES_MONITORADOS, async (symbol) => {
       const cacheKeyPrefix = `ohlcv_${symbol}`;
-      const ohlcv15mRaw = getCachedData(`${cacheKeyPrefix}_15m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '15m', undefined, config.RSI_PERIOD + 2));
-      if (!ohlcv15mRaw) {
+      const ohlcv15mRaw = getCachedData(`${cacheKeyPrefix}_15m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '15m', undefined, config.RSI_PERIOD + 10));
+      const ohlcv3mRaw = getCachedData(`${cacheKeyPrefix}_3m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '3m', undefined, 21));
+      if (!ohlcv15mRaw || !ohlcv3mRaw) {
         logger.warn(`Dados OHLCV insuficientes para ${symbol}, pulando...`);
         return;
       }
 
       const ohlcv15m = normalizeOHLCV(ohlcv15mRaw);
+      const ohlcv3m = normalizeOHLCV(ohlcv3mRaw);
       const closes15m = ohlcv15m.map(c => c.close).filter(c => !isNaN(c));
       const currentPrice = closes15m[closes15m.length - 1];
 
@@ -620,9 +690,11 @@ async function checkConditions() {
       }
 
       logger.info(`Últimos 5 candles 15m para ${symbol}: ${JSON.stringify(ohlcv15m.slice(-5))}`);
+      logger.info(`Últimos 5 candles 3m para ${symbol}: ${JSON.stringify(ohlcv3m.slice(-5))}`);
 
       await sendAlertRSIDivergence(symbol, {
         ohlcv15m,
+        ohlcv3m,
         price: currentPrice,
         rsi15m: rsi15mValues[rsi15mValues.length - 1],
         rsiDivergence,
