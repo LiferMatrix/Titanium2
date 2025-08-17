@@ -17,13 +17,11 @@ const config = {
   WPR_HIGH_THRESHOLD: -3,
   ATR_PERIOD: 14,
   RSI_PERIOD: 14,
-  FI_PERIOD: 13,
   ATR_PERCENT_MIN: 0.5,
   ATR_PERCENT_MAX: 3.0,
   CACHE_TTL: 10 * 60 * 1000,
   EMA_13_PERIOD: 13,
   EMA_34_PERIOD: 34,
-  EMA_89_PERIOD: 89,
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
 };
@@ -45,8 +43,7 @@ const state = {
   wprTriggerState: {},
   ultimoRompimento: {},
   ultimoEMACruzamento: {},
-  dataCache: new Map(),
-  ultimoWPRReset: {}
+  dataCache: new Map()
 };
 
 // Validação de variáveis de ambiente
@@ -78,7 +75,7 @@ const exchangeFutures = new ccxt.binance({
   options: { defaultType: 'future' }
 });
 
-// ================= UTILITÁRIOS ================= //
+// ================= UTILITÁRI union://www.tradingview.com/x/BINANCE:BTCUSDT/technicals/?timeframe=15&tab=technicals
 async function withRetry(fn, retries = 5, delayBase = 1000) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -162,37 +159,6 @@ function calculateRSI(data) {
   return rsi.filter(v => !isNaN(v));
 }
 
-function calculateOBV(data) {
-  let obv = 0;
-  const obvValues = [data[0].volume || data[0][5]];
-  for (let i = 1; i < data.length; i++) {
-    const curr = data[i];
-    const prev = data[i - 1];
-    const currClose = curr.close || curr[4];
-    const prevClose = prev.close || prev[4];
-    const volume = curr.volume || curr[5];
-    if (isNaN(currClose) || isNaN(prevClose) || isNaN(volume)) continue;
-    if (currClose > prevClose) obv += volume;
-    else if (currClose < prevClose) obv -= volume;
-    obvValues.push(obv);
-  }
-  return obvValues;
-}
-
-function calculateCVD(data) {
-  let cvd = 0;
-  for (let i = 1; i < data.length; i++) {
-    const curr = data[i];
-    const currClose = curr.close || curr[4];
-    const currOpen = curr.open || curr[1];
-    const volume = curr.volume || curr[5];
-    if (isNaN(currClose) || isNaN(currOpen) || isNaN(volume)) continue;
-    if (currClose > currOpen) cvd += volume;
-    else if (currClose < currOpen) cvd -= volume;
-  }
-  return cvd;
-}
-
 function calculateATR(data) {
   const atr = TechnicalIndicators.ATR.calculate({
     period: config.ATR_PERIOD,
@@ -201,20 +167,6 @@ function calculateATR(data) {
     close: data.map(c => c.close || c[4])
   });
   return atr.filter(v => !isNaN(v));
-}
-
-function calculateForceIndex(data, period = config.FI_PERIOD) {
-  if (!data || data.length < 2) return [];
-  const fiValues = [];
-  for (let i = 1; i < data.length; i++) {
-    const closeCurrent = data[i].close || data[i][4];
-    const closePrevious = data[i - 1].close || data[i - 1][4];
-    const volume = data[i].volume || data[i][5];
-    if (isNaN(closeCurrent) || isNaN(closePrevious) || isNaN(volume)) continue;
-    const fi = (closeCurrent - closePrevious) * volume;
-    fiValues.push(fi);
-  }
-  return fiValues.length >= period ? TechnicalIndicators.EMA.calculate({ period, values: fiValues }).filter(v => !isNaN(v)) : [];
 }
 
 function calculateStochastic(data, periodK = 5, smoothK = 3, periodD = 3) {
@@ -358,31 +310,9 @@ async function fetchOpenInterest(symbol, timeframe, retries = 5) {
       }
       return { isRising: false, percentChange: '0.00' };
     }
-    const oiValues = validOiData.map(d => d.openInterest).filter(v => v !== undefined);
-    const sortedOi = [...oiValues].sort((a, b) => a - b);
-    const q1 = sortedOi[Math.floor(sortedOi.length / 4)];
-    const q3 = sortedOi[Math.floor(3 * sortedOi.length / 4)];
-    const iqr = q3 - q1;
-    const lowerBound = q1 - 1.5 * iqr;
-    const upperBound = q3 + 1.5 * iqr;
-    const filteredOiData = validOiData.filter(d => d.openInterest >= lowerBound && d.openInterest <= upperBound);
-    if (filteredOiData.length < 3) {
-      logger.warn(`Registros válidos após filtro IQR insuficientes para ${symbol} no timeframe ${timeframe}: ${filteredOiData.length}`);
-      if (retries > 0) {
-        const delay = Math.pow(2, 5 - retries) * 1000;
-        logger.info(`Tentando novamente para ${symbol} no timeframe ${timeframe}, tentativas restantes: ${retries}, delay: ${delay}ms`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return await fetchOpenInterest(symbol, timeframe, retries - 1);
-      }
-      if (timeframe === '5m') {
-        logger.info(`Fallback para timeframe 15m para ${symbol}`);
-        return await fetchOpenInterest(symbol, '15m', 3);
-      }
-      return { isRising: false, percentChange: '0.00' };
-    }
-    const recentOi = filteredOiData.slice(0, 3).map(d => d.openInterest);
+    const recentOi = validOiData.slice(0, 3).map(d => d.openInterest).filter(v => v !== undefined);
     const sma = recentOi.reduce((sum, val) => sum + val, 0) / recentOi.length;
-    const previousRecentOi = filteredOiData.slice(3, 6).map(d => d.openInterest);
+    const previousRecentOi = validOiData.slice(3, 6).map(d => d.openInterest);
     const previousSma = previousRecentOi.length >= 3 ? previousRecentOi.reduce((sum, val) => sum + val, 0) / previousRecentOi.length : recentOi[recentOi.length - 1];
     const oiPercentChange = previousSma !== 0 ? ((sma - previousSma) / previousSma * 100).toFixed(2) : '0.00';
     const result = {
@@ -480,13 +410,10 @@ async function sendAlert1h2h(symbol, data) {
   const aggressiveDelta = await calculateAggressiveDelta(symbol);
   const atrPercent = (atr / price) * 100;
   if (!state.wprTriggerState[symbol]) state.wprTriggerState[symbol] = { '1h_2h': { buyTriggered: false, sellTriggered: false } };
-  if (!state.ultimoWPRReset[symbol]) state.ultimoWPRReset[symbol] = {};
   if (wpr2h <= config.WPR_LOW_THRESHOLD && wpr1h <= config.WPR_LOW_THRESHOLD) {
     state.wprTriggerState[symbol]['1h_2h'].buyTriggered = true;
-    state.ultimoWPRReset[symbol] = { type: 'alta', timestamp: agora, wpr1h: wpr1h, wpr2h: wpr2h };
   } else if (wpr2h >= config.WPR_HIGH_THRESHOLD && wpr1h >= config.WPR_HIGH_THRESHOLD) {
     state.wprTriggerState[symbol]['1h_2h'].sellTriggered = true;
-    state.ultimoWPRReset[symbol] = { type: 'baixa', timestamp: agora, wpr1h: wpr1h, wpr2h: wpr2h };
   }
   if (!state.ultimoEstocastico[symbol]) state.ultimoEstocastico[symbol] = {};
   const kAnteriorD = state.ultimoEstocastico[symbol].kD || estocasticoD?.k || 0;
@@ -502,24 +429,11 @@ async function sendAlert1h2h(symbol, data) {
   const entryLow = format(price - 0.3 * atr);
   const entryHigh = format(price + 0.5 * atr);
   const isBuySignal = state.wprTriggerState[symbol]['1h_2h'].buyTriggered && 
-                      //(lsr.value === null || lsr.value < 2.5) && 
-                      //atrPercent >= config.ATR_PERCENT_MIN && 
-                      //atrPercent <= config.ATR_PERCENT_MAX && 
-                      //aggressiveDelta.isSignificant && 
-                      //aggressiveDelta.isBuyPressure && 
                       isOIRising5m && 
-                      //oi15m.isRising &&
                       ema13_3m > ema34_3m && 
                       previousEma13_3m <= previousEma34_3m;
   const isSellSignal = state.wprTriggerState[symbol]['1h_2h'].sellTriggered && 
-                      //rsi1h > 68 && 
-                      //(lsr.value === null || lsr.value >= 2.5) && 
-                      //atrPercent >= config.ATR_PERCENT_MIN && 
-                      //atrPercent <= config.ATR_PERCENT_MAX && 
-                      //aggressiveDelta.isSignificant && 
-                      //!aggressiveDelta.isBuyPressure && 
                       !isOIRising5m && 
-                      //!oi15m.isRising &&
                       ema13_3m < ema34_3m && 
                       previousEma13_3m >= previousEma34_3m;
   const targets = isSellSignal
@@ -553,12 +467,9 @@ async function sendAlert1h2h(symbol, data) {
     ? `${aggressiveDelta.isBuyPressure ? '💹F.Comprador' : '⭕F.Vendedor'} ${aggressiveDelta.deltaPercent > 60 && lsr.value !== null && lsr.value < 1 ? '💥' : ''}(${aggressiveDelta.deltaPercent}%)`
     : '🔘Neutro';
   const tradingViewLink = `https://www.tradingview.com/chart/?symbol=BINANCE:${symbol.replace('/', '')}&interval=15`;
-  let wprResetText = '🔹 Liquidação: 🔘Nenhuma Recente';
-  
   
   let alertText = `🔹Ativo: *${symbol}* [- TradingView](${tradingViewLink})\n` +
     `💲 Preço: ${format(price)}\n` +
-    `${wprResetText}\n` +
     `🔹 RSI 1h: ${rsi1h.toFixed(2)} ${rsi1hEmoji}\n` +
     `🔹 LSR: ${lsr.value ? lsr.value.toFixed(2) : '🔹Spot'} ${lsrSymbol} (${lsr.percentChange}%)\n` +
     `🔹 Fund. R: ${fundingRateText}\n` +
@@ -597,7 +508,7 @@ async function checkConditions() {
   try {
     await limitConcurrency(config.PARES_MONITORADOS, async (symbol) => {
       const cacheKeyPrefix = `ohlcv_${symbol}`;
-      const ohlcv3mRawFutures = getCachedData(`${cacheKeyPrefix}_3m`) || await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '3m', undefined, Math.max(config.EMA_34_PERIOD + 1, config.EMA_89_PERIOD + 1)));
+      const ohlcv3mRawFutures = getCachedData(`${cacheKeyPrefix}_3m`) || await withRetry(() => exchangeFutures.fetchOHLCV(symbol, '3m', undefined, config.EMA_34_PERIOD + 1));
       const ohlcv15mRaw = getCachedData(`${cacheKeyPrefix}_15m`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '15m', undefined, config.WPR_PERIOD + 1));
       const ohlcv1hRaw = getCachedData(`${cacheKeyPrefix}_1h`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '1h', undefined, config.WPR_PERIOD + 1));
       const ohlcv2hRaw = getCachedData(`${cacheKeyPrefix}_2h`) || await withRetry(() => exchangeSpot.fetchOHLCV(symbol, '2h', undefined, config.WPR_PERIOD + 1));
